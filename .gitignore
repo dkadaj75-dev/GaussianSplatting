@@ -45,6 +45,10 @@ data/
 # --- Secrets / local config -----------------------------------------------
 .env
 .env.*
+# ...except the committed one, which selects the default Compose profile and
+# holds no secrets. Real secrets go in .env.local, still ignored by the line
+# above.
+!.env
 !.env.example
 
 # --- Editors & OS ---------------------------------------------------------

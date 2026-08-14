@@ -37,17 +37,30 @@ Milestone 0 is in progress, so not every directory exists yet.
 docker compose up --build
 ```
 
-- web  → http://localhost:5173
-- api  → http://localhost:8000 (docs at `/docs`)
-- redis → localhost:6379 (pinned to 7.2, the last BSD-licensed release)
+- web → http://localhost:5173
+- api → http://localhost:8000 (interactive docs at `/docs`)
 
-Photos and the dev SQLite database live in the `splat-data` named volume, so
-they survive `docker compose down`. Until `web/` and `worker/` ship their
-Dockerfiles, bring up the subset that exists:
+This runs the **fake pipeline**: uploads, job progress, the viewer and the
+measurement tools all work end to end, but the scene is a placeholder rather
+than a reconstruction of your photos. Nothing but Docker is required.
+
+For real reconstruction, pick the worker that matches your machine — exactly
+one worker may run, since they share a queue, and `--profile` replaces the
+default in `.env`:
 
 ```bash
-docker compose up --build api redis
+docker compose --profile gpu up --build   # NVIDIA GPU (see infra/README.md)
+docker compose --profile cpu up --build   # no GPU: real, but slow
 ```
+
+The first real build compiles OpenSplat and takes 20–60 minutes. Photos and
+the dev SQLite database live in the `splat-data` volume, so they survive
+`docker compose down`.
+
+**Check a photo set before committing to a GPU run** — `tools/reconstruct/`
+runs structure-from-motion on CPU in seconds and reports how many photos
+registered, which is the single best predictor of whether a capture will
+reconstruct at all. See `tools/reconstruct/README.md`.
 
 ### API only (local Python)
 

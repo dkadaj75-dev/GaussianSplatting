@@ -46,6 +46,11 @@ services:
         condition: service_healthy
 
   worker:
+    # Behind a profile so it can never run alongside worker-cpu/worker-gpu:
+    # every worker consumes the same Celery queue, and a fake worker racing a
+    # real one would silently publish placeholder artifacts. The repo's .env
+    # selects this profile by default, so `docker compose up` still works.
+    profiles: ["fake"]
     build: ./worker
     environment:
       # Broker, result backend and progress pub/sub — one Redis for all three.
