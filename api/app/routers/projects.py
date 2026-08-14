@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlmodel import Session, delete, select
 
 from app.deps import ProjectDep, SessionDep, SettingsDep
-from app.models import Job, Measurement, Photo, Project, ProjectStatus, utcnow
+from app.models import Job, Measurement, Photo, Project, ProjectStatus, ShareLink, utcnow
 from app.schemas import CalibrationCreate, ProjectCreate, ProjectRead, ProjectUpdate
 from app.storage import delete_project_files
 
@@ -114,15 +114,18 @@ def clear_calibration(project: ProjectDep, session: SessionDep) -> ProjectRead:
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(project: ProjectDep, session: SessionDep, settings: SettingsDep) -> Response:
-    """Delete a project along with its photos, jobs and measurements.
+    """Delete a project along with its photos, jobs, measurements and shares.
 
     Cascade is done explicitly because SQLite does not enforce foreign keys by
-    default.
+    default. Share links go too: a link outliving its project would be a token
+    pointing at nothing (the shared endpoints 404 on it either way, but a dead
+    row is not worth keeping).
     """
     project_id = project.id
     session.exec(delete(Photo).where(Photo.project_id == project_id))
     session.exec(delete(Job).where(Job.project_id == project_id))
     session.exec(delete(Measurement).where(Measurement.project_id == project_id))
+    session.exec(delete(ShareLink).where(ShareLink.project_id == project_id))
     session.delete(project)
     session.commit()
 

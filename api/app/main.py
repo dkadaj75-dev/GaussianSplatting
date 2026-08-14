@@ -20,7 +20,7 @@ from app import __version__
 from app.config import EventSource, Settings, get_settings
 from app.db import init_db
 from app.events import RedisEventBridge
-from app.routers import artifacts, dev, jobs, measurements, photos, projects, ws
+from app.routers import artifacts, dev, jobs, measurements, photos, projects, shares, ws
 from app.schemas import HealthResponse
 
 logger = logging.getLogger(__name__)
@@ -102,6 +102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(artifacts.router)
     app.include_router(measurements.router)
+    # Owner-facing share management and the read-only public surface are two
+    # routers on purpose — see app/routers/shares.py.
+    app.include_router(shares.router)
+    app.include_router(shares.public_router)
     app.include_router(dev.router)
     app.include_router(ws.router)
 

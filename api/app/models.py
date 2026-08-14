@@ -6,6 +6,7 @@ IDs are UUID4 strings so the client can reference an entity across services
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import UTC, datetime
 from enum import Enum
@@ -22,6 +23,18 @@ def new_id() -> str:
 def utcnow() -> datetime:
     """Timezone-aware UTC now (stored naive-UTC by SQLite, serialized as ISO)."""
     return datetime.now(UTC)
+
+
+def as_utc(value: datetime) -> datetime:
+    """Tag a naive timestamp as UTC.
+
+    SQLite drops tzinfo on the way in, so rows come back naive. Comparing such
+    a value against :func:`utcnow` (aware) raises ``TypeError``, and serializing
+    it would let browsers read ``2026-08-14T19:57:19`` as *local* time.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class ProjectStatus(str, Enum):
@@ -113,6 +126,66 @@ class Job(SQLModel, table=True):
     finished_at: datetime | None = Field(default=None)
     # Celery task id — populated once the queue integration lands (WP 0.4).
     task_id: str | None = Field(default=None, max_length=128, index=True)
+
+
+SHARE_TOKEN_BYTES = 32
+
+
+def new_share_token() -> str:
+    """A fresh share token: 32 random bytes (256 bits) as 43 URL-safe chars."""
+    return secrets.token_urlsafe(SHARE_TOKEN_BYTES)
+
+
+class ShareLink(SQLModel, table=True):
+    """A capability URL granting read-only access to one project's scene.
+
+    "Send this link to a colleague" (PLAN.md §3.5) — whoever holds the token can
+    read the scene summary, its artifacts and its measurements, and nothing else:
+    no other project, no mutating verb, no internal storage path.
+
+    ============================ TOKEN STORAGE TRADEOFF =======================
+    The token is stored **in the clear**, not hashed. A hash would mean the
+    plaintext exists only in the 201 response, and the owner's own listing
+    (``GET /api/projects/{id}/shares``) could never show a link again — the user
+    would have to revoke and re-share every time they lost the URL, which is the
+    common case for a link mailed weeks ago. Since the token is a bearer
+    capability that travels in a URL (browser history, chat logs, proxy logs), a
+    hash also protects far less than it does for a password: the URL itself is
+    the secret everywhere else along the path.
+
+    What carries the security instead:
+      * 256 bits of ``secrets`` entropy — unguessable, never enumerable;
+      * least privilege — the shared surface is read-only and single-project;
+      * revocation (``revoked_at``) and optional expiry (``expires_at``), both
+        checked on every request;
+      * no PII in the shared payload.
+
+    When user accounts land (and the DB starts holding credentials worth
+    stealing), switch to storing ``sha256(token)`` plus a short non-secret
+    prefix for display, and show the plaintext once at creation.
+    ===========================================================================
+    """
+
+    __tablename__ = "share_links"
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    # Indexed + unique: token lookup is the hot path on every shared request.
+    token: str = Field(default_factory=new_share_token, index=True, unique=True, max_length=64)
+    project_id: str = Field(foreign_key="projects.id", index=True)
+    created_at: datetime = Field(default_factory=utcnow, nullable=False)
+    # Both nullable: a link with neither set is valid forever until revoked.
+    expires_at: datetime | None = Field(default=None)
+    revoked_at: datetime | None = Field(default=None)
+    # The owner's own note about the recipient, e.g. "Site A hand-off".
+    label: str | None = Field(default=None, max_length=200)
+
+    def is_active(self, now: datetime | None = None) -> bool:
+        """Usable right now — neither revoked nor past its expiry."""
+        if self.revoked_at is not None:
+            return False
+        if self.expires_at is None:
+            return True
+        return as_utc(self.expires_at) > (now or utcnow())
 
 
 class Measurement(SQLModel, table=True):

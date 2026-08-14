@@ -6,27 +6,16 @@ Kept separate from the SQLModel tables so the storage layout can evolve
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, FiniteFloat
 
-from app.models import JobStage, JobStatus, MeasurementKind, ProjectStatus
+from app.models import JobStage, JobStatus, MeasurementKind, ProjectStatus, as_utc
 
-
-def _as_utc(value: datetime) -> datetime:
-    """Tag naive timestamps as UTC.
-
-    SQLite drops tzinfo on the way in, so rows come back naive. Without this,
-    responses would serialize as ``2026-08-14T19:57:19`` and browsers would
-    read them as *local* time.
-    """
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-UTCDatetime = Annotated[datetime, AfterValidator(_as_utc)]
+# Naive rows from SQLite would otherwise serialize as ``2026-08-14T19:57:19``
+# and be read as *local* time by browsers; ``as_utc`` tags them (app.models).
+UTCDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 
 class ORMModel(BaseModel):
@@ -184,6 +173,71 @@ class MeasurementRead(ORMModel):
     unit: str
     label: str | None
     created_at: UTCDatetime
+
+
+# --- Share links ------------------------------------------------------------
+
+
+class ShareLinkCreate(BaseModel):
+    """Body of ``POST /api/projects/{id}/shares`` (every field optional)."""
+
+    label: str | None = Field(default=None, max_length=200)
+    # Ten years is "effectively forever" while still bounding a typo like 1e9.
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class ShareLinkRead(BaseModel):
+    """Owner-facing view of a share link — token included.
+
+    Only the project's owner reaches this schema (the two endpoints returning it
+    live under ``/api/projects/{project_id}/shares``), so showing the token is
+    the point: it is what the user copies and sends. See ``models.ShareLink``
+    for why the token is stored in the clear.
+    """
+
+    id: str
+    token: str
+    # Client-facing route, not an API path: the viewer serves /shared/{token}.
+    url_path: str
+    label: str | None = None
+    created_at: UTCDatetime
+    expires_at: UTCDatetime | None = None
+    revoked_at: UTCDatetime | None = None
+
+
+class SharedJobRead(BaseModel):
+    """A finished job as seen through a share link.
+
+    Deliberately narrower than :class:`JobRead`: no ``task_id`` (an internal
+    Celery handle) and no progress/status churn — a shared scene only ever shows
+    runs that are ``done``.
+    """
+
+    id: str
+    stage: JobStage
+    created_at: UTCDatetime
+    finished_at: UTCDatetime | None = None
+
+
+class SharedProjectRead(BaseModel):
+    """Public scene summary behind ``GET /api/shared/{token}``.
+
+    Everything here is scene data the recipient is meant to see. Storage paths,
+    photo filenames and Celery task ids are all absent, and so is the project
+    id: the holder of a share token addresses the scene through the token.
+    """
+
+    name: str
+    created_at: UTCDatetime
+    status: ProjectStatus
+    photo_count: int = Field(default=0, ge=0)
+    # The calibration badge (PLAN.md §5) matters just as much to the recipient:
+    # it tells them whether "412 mm" is trustworthy.
+    calibration: CalibrationRead | None = None
+    jobs: list[SharedJobRead] = Field(default_factory=list)
+    # About the link itself, so the viewer can title the page and warn on expiry.
+    label: str | None = None
+    expires_at: UTCDatetime | None = None
 
 
 # --- Misc -------------------------------------------------------------------
