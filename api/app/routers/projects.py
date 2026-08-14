@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Response, status
+import math
+
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import func
 from sqlmodel import Session, delete, select
 
 from app.deps import ProjectDep, SessionDep, SettingsDep
-from app.models import Job, Measurement, Photo, Project, ProjectStatus
-from app.schemas import ProjectCreate, ProjectRead, ProjectUpdate
+from app.models import Job, Measurement, Photo, Project, ProjectStatus, utcnow
+from app.schemas import CalibrationCreate, ProjectCreate, ProjectRead, ProjectUpdate
 from app.storage import delete_project_files
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -69,6 +71,44 @@ def update_project(payload: ProjectUpdate, project: ProjectDep, session: Session
     session.add(project)
     session.commit()
     session.refresh(project)
+    return _read(project, _photo_counts(session, [project.id]).get(project.id, 0))
+
+
+@router.put("/{project_id}/calibration", response_model=ProjectRead)
+def set_calibration(
+    payload: CalibrationCreate, project: ProjectDep, session: SessionDep
+) -> ProjectRead:
+    """Set the known-distance scale without changing scene-space measurements."""
+    scene_distance = math.dist(payload.point_a, payload.point_b)
+    if scene_distance < 1e-9:
+        # Pydantic handles malformed points; this handles valid but coincident ones.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Calibration points must be at least 1e-9 scene units apart",
+        )
+
+    project.calibration = {
+        "scale": payload.real_distance_m / scene_distance,
+        "method": "known_distance",
+        "reference": payload.model_dump(),
+        # JSON cannot persist datetime objects directly. The response schema
+        # restores this ISO string as a UTC-aware datetime.
+        "calibrated_at": utcnow().isoformat(),
+    }
+    session.add(project)
+    session.commit()
+    session.refresh(project)
+    return _read(project, _photo_counts(session, [project.id]).get(project.id, 0))
+
+
+@router.delete("/{project_id}/calibration", response_model=ProjectRead)
+def clear_calibration(project: ProjectDep, session: SessionDep) -> ProjectRead:
+    """Clear calibration. Clearing an already uncalibrated project is a no-op."""
+    if project.calibration is not None:
+        project.calibration = None
+        session.add(project)
+        session.commit()
+        session.refresh(project)
     return _read(project, _photo_counts(session, [project.id]).get(project.id, 0))
 
 

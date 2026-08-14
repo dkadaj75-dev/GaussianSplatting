@@ -6,11 +6,15 @@ Run locally with:  uvicorn app.main:app --reload
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.config import EventSource, Settings, get_settings
@@ -52,6 +56,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("Job event bridge stopped")
 
 
+def _finite_only(value: Any) -> Any:
+    """Recursively replace non-finite floats so a payload echo stays serializable."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _finite_only(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_finite_only(item) for item in value]
+    if isinstance(value, Exception):
+        return str(value)
+    return value
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -69,6 +86,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # A request body containing non-finite floats (``Infinity``/``NaN``
+        # tokens from a lenient client encoder) is correctly rejected by
+        # pydantic, but the offending value is echoed under ``input`` in the
+        # error detail — which the strict response encoder cannot serialize,
+        # turning a 422 into a crash. Stringify non-finite floats before
+        # responding.
+        return JSONResponse(status_code=422, content={"detail": _finite_only(exc.errors())})
 
     app.include_router(projects.router)
     app.include_router(photos.router)

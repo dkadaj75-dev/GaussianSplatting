@@ -7,9 +7,9 @@ Kept separate from the SQLModel tables so the storage layout can evolve
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, FiniteFloat
 
 from app.models import JobStage, JobStatus, MeasurementKind, ProjectStatus
 
@@ -46,11 +46,32 @@ class ProjectUpdate(BaseModel):
     status: ProjectStatus | None = None
 
 
+Point3D = Annotated[list[FiniteFloat], Field(min_length=3, max_length=3)]
+
+
+class CalibrationReference(BaseModel):
+    point_a: Point3D
+    point_b: Point3D
+    real_distance_m: FiniteFloat
+
+
+class CalibrationCreate(CalibrationReference):
+    real_distance_m: FiniteFloat = Field(gt=0)
+
+
+class CalibrationRead(BaseModel):
+    scale: FiniteFloat
+    method: Literal["known_distance"]
+    reference: CalibrationReference
+    calibrated_at: UTCDatetime
+
+
 class ProjectRead(ORMModel):
     id: str
     name: str
     created_at: UTCDatetime
     status: ProjectStatus
+    calibration: CalibrationRead | None = None
     # Computed per request (there is no photo_count column): the project list is
     # the client's main screen and it would otherwise need one request per row.
     photo_count: int = Field(default=0, ge=0)

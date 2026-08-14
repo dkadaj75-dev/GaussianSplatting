@@ -79,6 +79,9 @@ class Project(SQLModel, table=True):
     name: str = Field(index=True, max_length=200)
     created_at: datetime = Field(default_factory=utcnow, nullable=False)
     status: ProjectStatus = Field(default=ProjectStatus.draft, index=True)
+    # SQLite dev databases have no migrations. Delete the dev DB after a schema
+    # bump so create_all() can create newly added columns.
+    calibration: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
 
 class Photo(SQLModel, table=True):
