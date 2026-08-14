@@ -1,0 +1,4 @@
+# Downloaded scene payloads are intentionally local-only.
+data/*
+!data/.gitkeep
+__pycache__/
