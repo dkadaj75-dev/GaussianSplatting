@@ -85,3 +85,46 @@ docs/     PLAN.md, ROADMAP.md, ADRs
 - Parallel agents own disjoint directories; cross-cutting changes go through the orchestrator.
 - Definition of done per WP: code + passing tests + brief decision summary; a review sub-agent passes over each WP before merge.
 - Codex model policy per project convention: `gpt-5.6-terra` for scoped WPs, `gpt-5.6-sol` only for architecture-heavy or hard-debugging work.
+
+---
+
+## Status — 2026-08-14
+
+Milestones 0–3 are complete and on the branch, plus 5.1 and 6.1 out of order
+(the automatic-calibration and sharing work was independent of Milestone 4, so
+it ran in parallel). Every package's gates are green: **151 api tests**,
+**15 worker tests**, **131 web tests**, ruff and eslint clean, production build
+and all three compose profiles valid.
+
+| WP | State | Notes |
+|----|-------|-------|
+| 0.1–0.4 | done | Scaffolds, Celery dispatch by task name, Redis→WebSocket bridge, GitHub Actions CI |
+| 1.1–1.3 | done | Viewer with touch nav, DPR clamp, context-loss recovery; sample fixture toolkit |
+| 1.4 | open | Needs a real low-end device; not verifiable in CI |
+| 2.1–2.2 | done | COLMAP SfM + OpenSplat training with progress parsing and registration diagnostics |
+| 2.3 | partial | Pure-Python PLY→`.splat` converter ships; `.spz`/`.ksplat` still open |
+| 2.4 | done | Upload → job → live five-stage progress → open finished scene |
+| 2.5 | done | CPU and CUDA worker images (COLMAP + OpenSplat) behind compose profiles |
+| 3.1–3.3 | done | Splat point picking, distances, known-distance calibration, badge |
+| 3.4 | open | Accuracy validation against a physical ground-truth object |
+| 4.1–4.3 | in progress | Capture guidance, offline upload queue, failure diagnostics |
+| 5.1 | done | ArUco auto-scale in the worker, applied to the project on job completion |
+| 5.2–5.3 | open | Angle/polyline/height tools, uncertainty display, report export |
+| 6.1 | done (API) | Share tokens and a read-only public surface; owner UI still open |
+| 6.2–6.3 | open | Source-photo frustum overlay, LOD tuning |
+
+### Verified vs. unverified
+
+Honest about what this environment could not prove: no Docker daemon, no GPU,
+and egress limited to package registries. So the images are desk-checked and
+their compose wiring validated, but **never built**; the real-backend pipeline
+is exercised against stub executables rather than a genuine COLMAP run; and the
+fixture downloader's URLs could not be fetched. Each needs one pass on a real
+machine.
+
+### Demo page
+
+`demo/` builds a single-file offline build of the viewer and measurement tools
+over synthetic scenes in the worker's own `.splat` layout, for publishing as a
+static page. It exists because the device-dependent half of this app — touch
+navigation and picking — cannot be judged from a test suite.
