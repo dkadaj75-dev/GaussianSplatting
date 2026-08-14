@@ -73,3 +73,35 @@ why `.splat` was not produced.
 ```
 
 `status` is `running`, `failed`, or `done`. The final successful event has `status: "done"`.
+
+### Optional ArUco automatic scale calibration
+
+SfM coordinates have no real-world scale. To request automatic calibration,
+print an ArUco marker from the selected OpenCV dictionary, measure its black
+square side precisely, and place it flat and unobstructed in the scene. Capture
+it clearly in several overlapping photos; avoid motion blur, glare, and placing
+it only at the edge of the reconstruction.
+
+Pass `marker_length_m` (for example `0.15`) with the job. `auto_calibrate`
+defaults to true when that value is present, and `marker_dictionary` defaults to
+`DICT_4X4_50`. Set `auto_calibrate: false` to opt out. Detection is best effort:
+missing OpenCV, no marker, or insufficient sparse-point matches leaves the
+scene uncalibrated and never fails the pipeline.
+
+When available, `output/manifest.json` contains a top-level `calibration`:
+
+```json
+{
+  "method": "aruco",
+  "scale": 0.0342,
+  "residual": 0.018,
+  "sample_count": 12,
+  "marker_length_m": 0.15,
+  "marker_dictionary": "DICT_4X4_50"
+}
+```
+
+Otherwise it is `null`. `scale` is meters per scene unit and `residual` is a
+normalized median-absolute-deviation spread, not a guaranteed measurement
+error. More views and well-reconstructed marker corners improve accuracy. The
+API/UI, not the worker, decide whether and when to apply this suggested scale.

@@ -1,2 +1,5 @@
 # Celery is BSD-licensed; its Redis extra provides the Redis transport/backend.
 celery[redis]>=5.3,<6
+numpy>=1.24,<3
+# Apache-2.0; headless is required because worker containers have no display.
+opencv-python-headless>=4.7,<5

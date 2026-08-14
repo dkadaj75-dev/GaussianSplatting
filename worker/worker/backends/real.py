@@ -17,6 +17,7 @@ from collections import deque
 from pathlib import Path
 from typing import Callable, Iterable
 
+from ..calibration import DEFAULT_DICTIONARY, detect_markers, map_marker_corners_to_3d, parse_colmap_text_model, solve_scale_from_observations
 from .base import JobContext, PipelineBackend, ProgressCallback
 
 
@@ -120,6 +121,7 @@ class ColmapOpenSplatBackend(PipelineBackend):
 
     def __init__(self) -> None:
         self._registration_stats: dict[str, int] = {"input_images": 0, "registered_images": 0}
+        self._calibration: dict | None = None
 
     @staticmethod
     def _require(executable: str) -> None:
@@ -226,6 +228,52 @@ class ColmapOpenSplatBackend(PipelineBackend):
         total = self._registration_stats["input_images"]
         if total and registered / total < 0.6:
             progress("sfm", 1.0, f"warning: only {registered}/{total} photos registered - add more overlapping shots")
+        self._run_auto_calibration(job, text_model, progress)
+
+    def _run_auto_calibration(self, job: JobContext, text_model: Path, progress: ProgressCallback) -> None:
+        """Best-effort calibration; failures only produce an SfM warning."""
+        self._calibration = None
+        marker_length = job.params.get("marker_length_m")
+        auto_calibrate = job.params.get("auto_calibrate", True)
+        if isinstance(auto_calibrate, str):
+            auto_calibrate = auto_calibrate.strip().lower() in {"1", "true", "yes", "on"}
+        if marker_length is None or not auto_calibrate:
+            return
+        try:
+            marker_length = float(marker_length)
+            if marker_length <= 0:
+                progress("sfm", 1.0, "warning: auto-calibration skipped: marker_length_m must be positive")
+                return
+            dictionary = str(job.params.get("marker_dictionary", DEFAULT_DICTIONARY))
+            image_paths = [path for path in sorted((job.work_dir / "images").iterdir()) if path.is_file() and path.suffix.lower() in _IMAGE_EXTENSIONS]
+            try:
+                import cv2  # type: ignore[import-not-found] # check separately for a clear message
+            except ImportError:
+                progress("sfm", 1.0, "auto-calibration unavailable: OpenCV is not installed")
+                return
+            del cv2
+            progress("sfm", 1.0, f"scanning {len(image_paths)} photos for markers")
+            model = parse_colmap_text_model(text_model)
+            observations: list[dict] = []
+            found: dict[int, int] = {}
+            for image_path in image_paths:
+                for detection in detect_markers(image_path, dictionary):
+                    found[detection["marker_id"]] = found.get(detection["marker_id"], 0) + 1
+                    observations.append(map_marker_corners_to_3d(detection, image_path.name, model))
+            if not found:
+                progress("sfm", 1.0, "no markers found - scene stays uncalibrated")
+                return
+            for marker_id, count in sorted(found.items()):
+                progress("sfm", 1.0, f"found marker {marker_id} in {count} photos")
+            result = solve_scale_from_observations(observations, marker_length)
+            if result["scale"] is None:
+                progress("sfm", 1.0, f"auto-calibration unavailable: {result.get('reason', 'insufficient sparse observations')}")
+                return
+            self._calibration = {"method": "aruco", "scale": result["scale"], "residual": result["residual"], "sample_count": result["sample_count"], "marker_length_m": marker_length, "marker_dictionary": dictionary}
+            progress("sfm", 1.0, f"auto-calibration: 1 scene unit = {result['scale']:.4g} m (spread {result['residual'] * 100:.1f}%)")
+        except Exception as exc:
+            self._calibration = None
+            progress("sfm", 1.0, f"warning: auto-calibration failed: {exc}")
 
     def train(self, job: JobContext, progress: ProgressCallback) -> None:
         self._require("opensplat")
@@ -267,6 +315,6 @@ class ColmapOpenSplatBackend(PipelineBackend):
                 artifacts.append({"filename": name, "bytes": path.stat().st_size, "format": output_format})
         if not artifacts:
             raise RuntimeError("No output artifacts were available to publish")
-        manifest = {"artifacts": artifacts, "registration": self._registration_stats}
+        manifest = {"artifacts": artifacts, "registration": self._registration_stats, "calibration": self._calibration}
         (job.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         progress("publish", 1.0, "published scene artifacts")
