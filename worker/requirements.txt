@@ -1,0 +1,2 @@
+# Celery is BSD-licensed; its Redis extra provides the Redis transport/backend.
+celery[redis]>=5.3,<6

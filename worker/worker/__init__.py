@@ -1,0 +1,1 @@
+"""SplatScene asynchronous processing worker."""
