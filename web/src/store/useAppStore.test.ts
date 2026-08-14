@@ -15,7 +15,8 @@ const job: Job = {
   projectId: 'p1',
   status: 'running',
   stage: 'sfm',
-  progress: 30,
+  progress: 0.3,
+  createdAt: '2026-08-14T10:00:00Z',
   updatedAt: '2026-08-14T10:01:00Z',
 };
 
@@ -28,7 +29,7 @@ describe('useAppStore', () => {
     const { upsertProject } = useAppStore.getState();
 
     upsertProject(project);
-    upsertProject({ ...project, status: 'ready', splatUrl: 'https://cdn/x.ksplat' });
+    upsertProject({ ...project, status: 'ready' });
 
     const { projects } = useAppStore.getState();
     expect(projects).toHaveLength(1);
@@ -48,10 +49,10 @@ describe('useAppStore', () => {
 
   it('indexes the latest job by project', () => {
     useAppStore.getState().upsertJob(job);
-    useAppStore.getState().upsertJob({ ...job, stage: 'train', progress: 60 });
+    useAppStore.getState().upsertJob({ ...job, stage: 'train', progress: 0.6 });
 
     const stored = useAppStore.getState().jobsByProjectId.p1;
     expect(stored.stage).toBe('train');
-    expect(stored.progress).toBe(60);
+    expect(stored.progress).toBe(0.6);
   });
 });

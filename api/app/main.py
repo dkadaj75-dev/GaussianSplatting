@@ -16,7 +16,7 @@ from app import __version__
 from app.config import EventSource, Settings, get_settings
 from app.db import init_db
 from app.events import RedisEventBridge
-from app.routers import dev, jobs, measurements, photos, projects, ws
+from app.routers import artifacts, dev, jobs, measurements, photos, projects, ws
 from app.schemas import HealthResponse
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(projects.router)
     app.include_router(photos.router)
     app.include_router(jobs.router)
+    app.include_router(artifacts.router)
     app.include_router(measurements.router)
     app.include_router(dev.router)
     app.include_router(ws.router)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
-import { api } from '../lib/api';
-import { API_URL } from '../lib/env';
+import { Link, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, queryKeys } from '../lib/api';
 import { useAppStore } from '../store/useAppStore';
 import type { PendingPhoto } from '../types';
 import { AlertIcon, CaptureIcon, TrashIcon } from '../components/icons';
@@ -26,15 +26,31 @@ function makePhoto(file: File): PendingPhoto {
 }
 
 export function CapturePage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [photos, setPhotos] = useState<PendingPhoto[]>([]);
   // Seeded once: the store holds a selection only when arriving from a project.
-  const [projectId, setProjectId] = useState(
-    () => useAppStore.getState().selectedProjectId ?? 'demo',
-  );
+  const [projectId, setProjectId] = useState(() => useAppStore.getState().selectedProjectId ?? '');
+  const [manualEntry, setManualEntry] = useState(false);
   const [progress, setProgress] = useState(0);
 
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+
+  const projectsQuery = useQuery({
+    queryKey: queryKeys.projects,
+    queryFn: api.listProjects,
+  });
+
+  const projects = projectsQuery.data ?? [];
+  // With the API unreachable the picker cannot help; fall back to typing an ID.
+  const usePicker = !manualEntry && !projectsQuery.isError && projects.length > 0;
+  // Derived rather than stored, so a project list arriving late (or a stale
+  // selection from a deleted project) always leaves the picker on a real value.
+  const selectedProjectId =
+    !usePicker || (projectId && projects.some((project) => project.id === projectId))
+      ? projectId
+      : projects[0].id;
 
   // Revoke every object URL when the page unmounts, without re-running on each add.
   const photosRef = useRef(photos);
@@ -69,18 +85,26 @@ export function CapturePage() {
     });
   }, []);
 
+  const targetId = selectedProjectId.trim();
+
   const upload = useMutation({
     mutationFn: () =>
       api.uploadPhotos(
-        projectId.trim(),
+        targetId,
         photos.map((p) => p.file),
         { onProgress: setProgress },
       ),
     onMutate: () => setProgress(0),
+    onSuccess: async () => {
+      clearAll();
+      useAppStore.getState().selectProject(targetId);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.project(targetId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+    },
   });
 
   const totalBytes = photos.reduce((sum, p) => sum + p.size, 0);
-  const canUpload = photos.length > 0 && projectId.trim().length > 0 && !upload.isPending;
+  const canUpload = photos.length > 0 && targetId.length > 0 && !upload.isPending;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -194,23 +218,58 @@ export function CapturePage() {
         )}
 
         <section className="mt-6 rounded-xl border border-line bg-raised p-4">
-          <label htmlFor="project-id" className="block text-sm font-medium">
-            Project ID
+          <label htmlFor="project-select" className="block text-sm font-medium">
+            Upload to project
           </label>
-          <p className="mt-1 text-xs text-muted">
-            Photos are posted to{' '}
-            <code className="font-mono break-all">
-              {API_URL}/api/projects/{projectId || '{id}'}/photos
-            </code>
-          </p>
-          <input
-            id="project-id"
-            value={projectId}
-            onChange={(event) => setProjectId(event.target.value)}
-            placeholder="demo"
-            autoComplete="off"
-            className="mt-2 min-h-touch w-full rounded-lg border border-line bg-sunken px-3 font-mono text-sm outline-none focus:border-accent"
-          />
+
+          {usePicker ? (
+            <select
+              id="project-select"
+              value={selectedProjectId}
+              onChange={(event) => setProjectId(event.target.value)}
+              className="mt-2 min-h-touch w-full rounded-lg border border-line bg-sunken px-3 text-sm outline-none focus:border-accent"
+            >
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name} · {project.photoCount} photo
+                  {project.photoCount === 1 ? '' : 's'}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              id="project-select"
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+              placeholder="Project ID"
+              autoComplete="off"
+              className="mt-2 min-h-touch w-full rounded-lg border border-line bg-sunken px-3 font-mono text-sm outline-none focus:border-accent"
+            />
+          )}
+
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted">
+            {projectsQuery.isPending ? <span>Loading projects…</span> : null}
+            {projectsQuery.isError ? (
+              <span className="flex items-start gap-1.5 break-words">
+                <AlertIcon className="mt-0.5 size-3.5 shrink-0" />
+                Project list unavailable — enter the ID manually.
+              </span>
+            ) : null}
+            {!projectsQuery.isPending && !projectsQuery.isError && projects.length === 0 ? (
+              <Link to="/" className="underline underline-offset-2 hover:text-content">
+                No projects yet — create one
+              </Link>
+            ) : null}
+            {projects.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setManualEntry((current) => !current)}
+                className="underline underline-offset-2 hover:text-content"
+              >
+                {manualEntry ? 'Pick from list' : 'Enter ID manually'}
+              </button>
+            ) : null}
+          </div>
 
           <button
             type="button"
@@ -218,7 +277,9 @@ export function CapturePage() {
             onClick={() => upload.mutate()}
             className="mt-3 min-h-touch w-full rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition-opacity enabled:hover:opacity-90 disabled:opacity-40"
           >
-            {upload.isPending ? `Uploading… ${progress}%` : `Upload ${photos.length} photos`}
+            {upload.isPending
+              ? `Uploading… ${progress}%`
+              : `Upload ${photos.length} photo${photos.length === 1 ? '' : 's'}`}
           </button>
 
           {upload.isPending ? (
@@ -240,16 +301,24 @@ export function CapturePage() {
             <div className="mt-3 flex items-start gap-2 rounded-lg border border-line bg-sunken p-3">
               <AlertIcon className="mt-0.5 size-4 shrink-0 text-muted" />
               <p className="text-xs break-words text-muted">
-                {upload.error instanceof Error ? upload.error.message : 'Upload failed.'} The
-                pipeline API is not wired up yet — this is expected in Milestone 0.
+                {upload.error instanceof Error ? upload.error.message : 'Upload failed.'}
               </p>
             </div>
           ) : null}
 
           {upload.isSuccess ? (
-            <p className="mt-3 text-xs text-muted">
-              Uploaded {upload.data.uploaded} photo{upload.data.uploaded === 1 ? '' : 's'}.
-            </p>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-muted">
+                Uploaded {upload.data.uploaded} photo{upload.data.uploaded === 1 ? '' : 's'}.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigate(`/projects/${targetId}`)}
+                className="min-h-touch rounded-lg border border-line px-3 text-xs font-medium transition-colors hover:bg-sunken"
+              >
+                Go to project
+              </button>
+            </div>
           ) : null}
         </section>
       </div>

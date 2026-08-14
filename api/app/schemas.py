@@ -51,6 +51,9 @@ class ProjectRead(ORMModel):
     name: str
     created_at: UTCDatetime
     status: ProjectStatus
+    # Computed per request (there is no photo_count column): the project list is
+    # the client's main screen and it would otherwise need one request per row.
+    photo_count: int = Field(default=0, ge=0)
 
 
 # --- Photos -----------------------------------------------------------------
@@ -105,6 +108,18 @@ class JobEvent(BaseModel):
     status: JobStatus
     message: str | None = None
     updated_at: UTCDatetime
+
+
+class ArtifactRead(BaseModel):
+    """One file published by a job (``GET /api/jobs/{id}/artifacts``).
+
+    ``format`` is the lower-case extension (``splat``, ``ply``, ``ksplat``,
+    ``spz``) so the client can pick a loader without re-parsing filenames.
+    """
+
+    filename: str
+    bytes: int = Field(ge=0, description="Size on disk, bytes")
+    format: str
 
 
 class DevAdvanceRequest(BaseModel):

@@ -56,4 +56,3 @@ async def advance_job_endpoint(
     sync_project_status(session, job)
     await publish_job_event(job)
     return job
-

@@ -15,7 +15,9 @@ const NAV: NavEntry[] = [
 ];
 
 function titleForPath(pathname: string): string {
-  return NAV.find((entry) => entry.to === pathname)?.label ?? 'SplatScene';
+  const exact = NAV.find((entry) => entry.to === pathname)?.label;
+  if (exact) return exact;
+  return pathname.startsWith('/projects/') ? 'Project' : 'SplatScene';
 }
 
 function Brand() {
@@ -62,9 +64,9 @@ export function AppShell() {
           ))}
         </nav>
         <p className="mt-auto px-3 text-[11px] leading-relaxed text-muted">
-          Milestone 0 · scaffold
+          Milestone 2 · pipeline
           <br />
-          Pipeline not yet connected.
+          Upload → process → view.
         </p>
       </aside>
 

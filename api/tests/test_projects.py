@@ -63,6 +63,24 @@ async def test_list_projects_and_filter(client: AsyncClient) -> None:
     assert [p["name"] for p in ready.json()] == ["B"]
 
 
+async def test_photo_count_is_reported_per_project(
+    client: AsyncClient, project_with_photo: dict
+) -> None:
+    """The project list is the client's main screen; it must not need N+1 calls."""
+    from tests.conftest import upload_files
+
+    empty = (await client.post("/api/projects", json={"name": "Empty"})).json()
+    assert empty["photo_count"] == 0
+
+    await client.post(f"/api/projects/{project_with_photo['id']}/photos", files=upload_files(2))
+
+    detail = await client.get(f"/api/projects/{project_with_photo['id']}")
+    assert detail.json()["photo_count"] == 3
+
+    counts = {p["id"]: p["photo_count"] for p in (await client.get("/api/projects")).json()}
+    assert counts == {project_with_photo["id"]: 3, empty["id"]: 0}
+
+
 async def test_update_project(client: AsyncClient, project: dict) -> None:
     response = await client.patch(
         f"/api/projects/{project['id']}", json={"name": "Renamed", "status": "ready"}

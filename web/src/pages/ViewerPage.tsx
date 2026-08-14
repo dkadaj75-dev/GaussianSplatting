@@ -1,4 +1,5 @@
 import { Suspense, lazy, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { ViewerIcon } from '../components/icons';
 
@@ -20,9 +21,26 @@ function isPlausibleSplatUrl(value: string): boolean {
 }
 
 export function ViewerPage() {
-  const viewerSrc = useAppStore((s) => s.viewerSrc);
+  const storedSrc = useAppStore((s) => s.viewerSrc);
   const setViewerSrc = useAppStore((s) => s.setViewerSrc);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // `?src=` is the source of truth on this route: it makes a finished scene
+  // linkable and survives a reload. The store mirrors it so the scene is still
+  // there after a trip to another tab.
+  const linkedSrc = searchParams.get('src');
+  const viewerSrc = linkedSrc ?? storedSrc;
   const [draft, setDraft] = useState(viewerSrc ?? '');
+
+  const load = (value: string) => {
+    setViewerSrc(value);
+    setSearchParams({ src: value }, { replace: true });
+  };
+
+  const close = () => {
+    setViewerSrc(null);
+    setSearchParams({}, { replace: true });
+  };
 
   const trimmed = draft.trim();
   const valid = isPlausibleSplatUrl(trimmed);
@@ -33,7 +51,7 @@ export function ViewerPage() {
         className="flex shrink-0 items-center gap-2 border-b border-line bg-sunken px-3 py-2"
         onSubmit={(event) => {
           event.preventDefault();
-          if (valid) setViewerSrc(trimmed);
+          if (valid) load(trimmed);
         }}
       >
         <label htmlFor="splat-url" className="sr-only">
@@ -61,7 +79,7 @@ export function ViewerPage() {
         {viewerSrc ? (
           <button
             type="button"
-            onClick={() => setViewerSrc(null)}
+            onClick={close}
             className="min-h-touch shrink-0 rounded-lg border border-line px-3 text-sm font-medium transition-colors hover:bg-raised"
           >
             Close
@@ -89,7 +107,10 @@ export function ViewerPage() {
                 Paste a URL to a <code className="font-mono">.ply</code>,{' '}
                 <code className="font-mono">.splat</code>,{' '}
                 <code className="font-mono">.ksplat</code> or{' '}
-                <code className="font-mono">.spz</code> file above, or open a finished project
+                <code className="font-mono">.spz</code> file above, or{' '}
+                <Link to="/" className="underline underline-offset-2 hover:text-content">
+                  open a finished project
+                </Link>{' '}
                 from the Projects tab.
               </p>
               <p className="mt-4 text-xs text-muted">

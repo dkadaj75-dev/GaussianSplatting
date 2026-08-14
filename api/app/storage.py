@@ -1,6 +1,10 @@
-"""Local-filesystem photo storage.
+"""Local-filesystem photo + job-artifact storage.
 
-Layout: ``{STORAGE_DIR}/{project_id}/{photo_id}{ext}``.
+Layout:
+
+* photos    — ``{STORAGE_DIR}/{project_id}/{photo_id}{ext}``
+* artifacts — ``{STORAGE_DIR}/projects/{project_id}/jobs/{job_id}/output/*``
+  (written by the worker; see ``worker/README.md``)
 
 ================================ INTEGRATION POINT ============================
 PLAN.md §1 targets MinIO/S3 with presigned uploads for multi-node deploys.
@@ -43,6 +47,45 @@ def sanitize_filename(filename: str | None) -> str:
 
 def project_dir(storage_dir: Path, project_id: str) -> Path:
     return Path(storage_dir).expanduser() / project_id
+
+
+def job_output_dir(storage_dir: Path, project_id: str, job_id: str) -> Path:
+    """Directory the worker publishes a job's artifacts into.
+
+    Mirrors ``worker.tasks._job_context`` exactly — the two are joined only by
+    this convention, so it is spelled out in one place on each side.
+    """
+    return Path(storage_dir).expanduser() / "projects" / project_id / "jobs" / job_id / "output"
+
+
+def resolve_within(directory: Path, filename: str) -> Path | None:
+    """Resolve ``filename`` inside ``directory``, or ``None`` if it escapes.
+
+    Two independent guards, because either alone has known bypasses:
+
+    1. the name must be a bare filename (no separators, no ``..``, not hidden
+       traversal like ``..%2f`` once the server has decoded it), and
+    2. the resolved path's parent must be the resolved directory — which also
+       catches a symlink inside the output dir pointing elsewhere.
+    """
+    name = filename.strip()
+    if not name or name in {".", ".."}:
+        return None
+    if "/" in name or "\\" in name or "\x00" in name:
+        return None
+    if os.path.basename(name) != name:  # pragma: no cover - covered by the checks above
+        return None
+
+    base = Path(directory).expanduser()
+    try:
+        resolved_base = base.resolve(strict=False)
+        candidate = (base / name).resolve(strict=False)
+    except OSError:  # pragma: no cover - unreadable mount point
+        return None
+
+    if candidate.parent != resolved_base:
+        return None
+    return candidate
 
 
 def save_upload(

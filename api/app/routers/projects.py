@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Response, status
-from sqlmodel import delete, select
+from sqlalchemy import func
+from sqlmodel import Session, delete, select
 
 from app.deps import ProjectDep, SessionDep, SettingsDep
 from app.models import Job, Measurement, Photo, Project, ProjectStatus
@@ -13,13 +14,29 @@ from app.storage import delete_project_files
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
+def _photo_counts(session: Session, project_ids: list[str]) -> dict[str, int]:
+    """Photos per project in one grouped query (never one query per row)."""
+    if not project_ids:
+        return {}
+    statement = (
+        select(Photo.project_id, func.count(Photo.id))
+        .where(Photo.project_id.in_(project_ids))
+        .group_by(Photo.project_id)
+    )
+    return {project_id: count for project_id, count in session.exec(statement).all()}
+
+
+def _read(project: Project, photo_count: int) -> ProjectRead:
+    return ProjectRead(**project.model_dump(), photo_count=photo_count)
+
+
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
-def create_project(payload: ProjectCreate, session: SessionDep) -> Project:
+def create_project(payload: ProjectCreate, session: SessionDep) -> ProjectRead:
     project = Project(name=payload.name, status=payload.status)
     session.add(project)
     session.commit()
     session.refresh(project)
-    return project
+    return _read(project, 0)
 
 
 @router.get("", response_model=list[ProjectRead])
@@ -28,28 +45,31 @@ def list_projects(
     status_filter: ProjectStatus | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-) -> list[Project]:
+) -> list[ProjectRead]:
     statement = select(Project)
     if status_filter is not None:
         statement = statement.where(Project.status == status_filter)
     statement = statement.order_by(Project.created_at.desc()).offset(offset).limit(limit)
-    return list(session.exec(statement).all())
+    projects = list(session.exec(statement).all())
+
+    counts = _photo_counts(session, [project.id for project in projects])
+    return [_read(project, counts.get(project.id, 0)) for project in projects]
 
 
 @router.get("/{project_id}", response_model=ProjectRead)
-def get_project(project: ProjectDep) -> Project:
-    return project
+def get_project(project: ProjectDep, session: SessionDep) -> ProjectRead:
+    return _read(project, _photo_counts(session, [project.id]).get(project.id, 0))
 
 
 @router.patch("/{project_id}", response_model=ProjectRead)
-def update_project(payload: ProjectUpdate, project: ProjectDep, session: SessionDep) -> Project:
+def update_project(payload: ProjectUpdate, project: ProjectDep, session: SessionDep) -> ProjectRead:
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
         setattr(project, field, value)
     session.add(project)
     session.commit()
     session.refresh(project)
-    return project
+    return _read(project, _photo_counts(session, [project.id]).get(project.id, 0))
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -322,6 +322,7 @@ async def test_run_reconnects_with_backoff(bus, monkeypatch):
                 if attempts <= 2:
                     raise ConnectionError("connection reset by peer")
                 yield  # pragma: no cover
+
             return _gen()
 
         async def aclose(self) -> None:
