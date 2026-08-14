@@ -183,3 +183,41 @@ def read_manifest_calibration(directory: Path) -> dict[str, Any] | None:
     if isinstance(dictionary, str) and dictionary:
         calibration["marker_dictionary"] = dictionary
     return calibration
+
+
+def read_manifest_registration(directory: Path) -> dict[str, int] | None:
+    """Return the worker's ``registration`` counts, or ``None``.
+
+    How many of the submitted photos SfM actually placed is the single most
+    useful diagnostic a user can be given about a finished scene — "28 of 40
+    registered" explains a hole in the reconstruction that no error message
+    would, because the job itself succeeded. The worker records it in
+    ``manifest.json``; reading it here keeps that fact available long after the
+    live progress messages have scrolled away.
+    """
+    path = directory / MANIFEST_FILENAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        logger.warning("Ignoring unreadable %s in %s", MANIFEST_FILENAME, directory)
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+    block = raw.get("registration")
+    if not isinstance(block, dict):
+        return None
+
+    counts: dict[str, int] = {}
+    for key in ("input_images", "registered_images"):
+        value = block.get(key)
+        # bool is an int subclass; a JSON true here means a broken writer.
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        counts[key] = value
+    if counts["registered_images"] > counts["input_images"]:
+        logger.warning("Discarding impossible registration counts in %s", directory)
+        return None
+    return counts

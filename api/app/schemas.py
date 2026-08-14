@@ -101,6 +101,13 @@ class JobCreate(BaseModel):
     message: str | None = Field(default=None, max_length=2000)
 
 
+class RegistrationRead(BaseModel):
+    """How many submitted photos SfM actually placed in the reconstruction."""
+
+    input_images: int = Field(ge=0)
+    registered_images: int = Field(ge=0)
+
+
 class JobRead(ORMModel):
     id: str
     project_id: str
@@ -113,6 +120,10 @@ class JobRead(ORMModel):
     started_at: UTCDatetime | None
     finished_at: UTCDatetime | None
     task_id: str | None
+    # Read from the job's manifest per request rather than stored: the output
+    # directory is already the authority on what a finished job produced, and
+    # the live progress message that carried this is long gone by then.
+    registration: RegistrationRead | None = None
 
 
 class JobEvent(BaseModel):

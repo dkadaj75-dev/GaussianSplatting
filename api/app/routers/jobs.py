@@ -11,12 +11,27 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlmodel import select
 
+from app.artifact_service import read_manifest_registration
+from app.config import get_settings
 from app.deps import ProjectDep, SessionDep
 from app.job_service import enqueue_job, publish_job_event
 from app.models import Job, JobStatus, Photo, ProjectStatus
-from app.schemas import JobCreate, JobRead
+from app.schemas import JobCreate, JobRead, RegistrationRead
+from app.storage import job_output_dir
 
 router = APIRouter(tags=["jobs"])
+
+
+def with_registration(job: Job) -> JobRead:
+    """Attach the manifest's registration counts to a finished job."""
+    payload = JobRead.model_validate(job)
+    if job.status != JobStatus.done:
+        return payload
+    output_dir = job_output_dir(get_settings().storage_dir, job.project_id, job.id)
+    counts = read_manifest_registration(output_dir)
+    if counts is not None:
+        payload.registration = RegistrationRead(**counts)
+    return payload
 
 
 @router.post(
@@ -70,19 +85,19 @@ def list_project_jobs(
     project: ProjectDep,
     session: SessionDep,
     limit: int = Query(default=50, ge=1, le=200),
-) -> list[Job]:
+) -> list[JobRead]:
     statement = (
         select(Job).where(Job.project_id == project.id).order_by(Job.created_at.desc()).limit(limit)
     )
-    return list(session.exec(statement).all())
+    return [with_registration(job) for job in session.exec(statement).all()]
 
 
 @router.get("/api/jobs/{job_id}", response_model=JobRead)
-def get_job(job_id: str, session: SessionDep) -> Job:
+def get_job(job_id: str, session: SessionDep) -> JobRead:
     job = session.get(Job, job_id)
     if job is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job {job_id} not found",
         )
-    return job
+    return with_registration(job)
