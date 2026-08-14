@@ -1,0 +1,9 @@
+# SplatScene API — development / test dependencies.
+# All entries are permissively licensed (MIT / BSD / Apache-2.0).
+
+-r requirements.txt
+
+pytest==8.3.4             # MIT
+pytest-asyncio==0.25.0    # Apache-2.0
+httpx==0.28.1             # BSD-3-Clause (AsyncClient used by the tests)
+ruff==0.8.4               # MIT (lint/format)

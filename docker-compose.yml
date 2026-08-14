@@ -1,0 +1,75 @@
+# SplatScene — full local stack.
+#
+#   docker compose up --build
+#
+# Ownership note: only `api/Dockerfile` is owned by this work package (WP 0.2).
+# `web/Dockerfile` (WP 0.1) and `worker/Dockerfile` (WP 0.3) are owned by their
+# own packages and are referenced here so the compose topology is complete from
+# day one. Until those files land, bring up a subset, e.g.:
+#
+#   docker compose up --build api redis
+#
+# `docker compose config` will report a missing build context for any service
+# whose package directory does not exist yet — that is expected mid-Milestone-0.
+
+services:
+  web:
+    # Dockerfile owned by WP 0.1 (web/ package).
+    build: ./web
+    ports:
+      - "5173:5173"
+    environment:
+      # The browser talks to the API directly; keep in sync with api CORS_ORIGINS.
+      VITE_API_BASE_URL: http://localhost:8000
+    depends_on:
+      - api
+
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////srv/api/data/splatscene.db
+      STORAGE_DIR: /srv/api/data/photos
+      CORS_ORIGINS: http://localhost:5173
+      REDIS_URL: redis://redis:6379/0
+      # Dev helper endpoints (POST /api/dev/jobs/{id}/advance). Set to 0 for
+      # anything resembling a real deployment.
+      DEV_MODE: "1"
+    volumes:
+      - splat-data:/srv/api/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    # Dockerfile owned by WP 0.3 (worker/ package — may not exist yet).
+    build: ./worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: sqlite:////srv/api/data/splatscene.db
+      STORAGE_DIR: /srv/api/data/photos
+    volumes:
+      # Worker and API share the photo/artifact volume on a single node.
+      - splat-data:/srv/api/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    # Pinned to 7.2 — the last BSD-licensed release (PLAN.md §6). Do not bump
+    # to >= 7.4 (RSAL/SSPL); switch to valkey/valkey if a newer engine is needed.
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  splat-data:
+  redis-data:

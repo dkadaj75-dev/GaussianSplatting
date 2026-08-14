@@ -1,0 +1,13 @@
+# Lint/format config for the api package.
+line-length = 100
+target-version = "py311"
+
+[lint]
+# pycodestyle errors, pyflakes, isort, pyupgrade, bugbear.
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "B008",  # FastAPI's Depends()/File() defaults are the documented idiom.
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E501"]

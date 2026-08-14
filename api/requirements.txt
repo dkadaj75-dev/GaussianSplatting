@@ -1,0 +1,10 @@
+# SplatScene API — runtime dependencies.
+# All entries are permissively licensed (MIT / BSD / Apache-2.0).
+
+fastapi==0.115.6          # MIT
+uvicorn[standard]==0.34.0 # BSD-3-Clause
+sqlmodel==0.0.22          # MIT (wraps SQLAlchemy, MIT)
+pydantic==2.10.4          # MIT
+pydantic-settings==2.7.0  # MIT
+python-multipart==0.0.20  # Apache-2.0 (multipart/form-data uploads)
+websockets==14.1          # BSD-3-Clause (uvicorn ws implementation)
