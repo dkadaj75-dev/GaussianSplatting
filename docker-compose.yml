@@ -64,6 +64,47 @@ services:
       redis:
         condition: service_healthy
 
+  worker-cpu:
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: infra/worker.cpu.Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /srv/api/data/photos
+      PIPELINE_BACKEND: real
+      COLMAP_SIFT_USE_GPU: "0"
+    volumes:
+      - splat-data:/srv/api/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: infra/worker.gpu.Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /srv/api/data/photos
+      PIPELINE_BACKEND: real
+      # Jammy apt COLMAP is not CUDA-enabled. Enable only after replacing it
+      # with a CUDA-enabled COLMAP build.
+      COLMAP_SIFT_USE_GPU: "0"
+    volumes:
+      - splat-data:/srv/api/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   redis:
     # Pinned to 7.2 — the last BSD-licensed release (PLAN.md §6). Do not bump
     # to >= 7.4 (RSAL/SSPL); switch to valkey/valkey if a newer engine is needed.

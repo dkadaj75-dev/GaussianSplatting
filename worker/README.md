@@ -105,3 +105,9 @@ Otherwise it is `null`. `scale` is meters per scene unit and `residual` is a
 normalized median-absolute-deviation spread, not a guaranteed measurement
 error. More views and well-reconstructed marker corners improve accuracy. The
 API/UI, not the worker, decide whether and when to apply this suggested scale.
+
+## Real-backend container images
+
+See [`../infra/README.md`](../infra/README.md) for CPU and NVIDIA CUDA images,
+Compose profiles, host prerequisites, and current COLMAP limitations. The
+default Compose stack continues to use the lightweight fake-backend worker.
