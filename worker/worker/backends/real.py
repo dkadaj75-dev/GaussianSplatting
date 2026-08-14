@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -287,7 +288,30 @@ class ColmapOpenSplatBackend(PipelineBackend):
                 return int(match.group(1)) / max(1, int(match.group(2)))
             match = re.search(r"(?:step|iter(?:ation)?)\s+(\d+)\b", line, re.I)
             return int(match.group(1)) / iterations if match else None
-        self._run(["opensplat", str(job.work_dir), "-n", str(iterations), "-o", str(output)], "train", 0.0, 1.0, progress, "training OpenSplat model", step_fraction)
+
+        command = ["opensplat", str(job.work_dir), "-n", str(iterations), "-o", str(output)]
+
+        # Training VRAM scales with image area, and consumer cards run out long
+        # before the algorithm does: 8 GB wants full-resolution phone photos
+        # halved. `-d` is OpenSplat's downscale factor.
+        downscale = job.params.get("downscale")
+        if downscale is not None:
+            factor = int(downscale)
+            if factor < 1:
+                raise ValueError("downscale must be 1 or greater")
+            if factor > 1:
+                command += ["-d", str(factor)]
+
+        # Escape hatch: OpenSplat's flags move between releases, and a build
+        # that wants `--max-splats` or similar should not need a code change.
+        extra = job.params.get("trainer_args") or []
+        if isinstance(extra, str):
+            extra = shlex.split(extra)
+        if not isinstance(extra, (list, tuple)) or not all(isinstance(a, str) for a in extra):
+            raise ValueError("trainer_args must be a list of strings or a shell-quoted string")
+        command += list(extra)
+
+        self._run(command, "train", 0.0, 1.0, progress, "training OpenSplat model", step_fraction)
         if not output.is_file() or output.stat().st_size == 0:
             raise RuntimeError("OpenSplat completed without producing work_dir/splat.ply")
 

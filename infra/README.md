@@ -88,3 +88,53 @@ These Dockerfiles were desk-checked but could not be built here. OpenSplat
 source compatibility, libtorch downloads, runtime shared-library closure, CUDA
 architecture compatibility, GPU execution, and the real pipeline all require
 verification on Docker/NVIDIA hosts.
+
+## Running on a laptop GPU (8 GB, e.g. RTX 2070)
+
+The `gpu` image already compiles OpenSplat for compute capability 7.5, so a
+Turing card (RTX 20-series) is covered by the default
+`CMAKE_CUDA_ARCHITECTURES=70;75;80;86;89` — no build argument needed.
+
+**Driver.** CUDA 12.x minor-version compatibility means the 12.4 runtime works
+with any driver from the 525 series upward (Linux) / 527 upward (Windows); it
+does not require a 550 driver. Check with `nvidia-smi`.
+
+**Windows hosts** run this through WSL2: install a recent NVIDIA Windows driver
+(the WSL CUDA support is in the Windows driver, *not* inside WSL), then Docker
+Desktop with the WSL2 backend and GPU support enabled. `nvidia-smi` must work
+inside your WSL distro before Docker will pass the GPU through.
+
+**VRAM is the real limit, and it is image area that consumes it.** Training
+allocates per-pixel tensors across the whole photo set, so full-resolution phone
+photos (12 MP+) will exhaust 8 GB long before the algorithm struggles. Pass
+`downscale` with the job:
+
+| Photos | Suggested `downscale` | Notes |
+|---|---|---|
+| 12 MP phone, 30–60 shots | `2` | Halves each side; the usual starting point on 8 GB |
+| 12 MP phone, 100+ shots | `2`–`4` | More views means more resident data |
+| ≤ 6 MP or pre-shrunk | `1` | Full resolution is usually fine |
+
+`iterations` trades time for quality: 7000 (the default) gives a usable scene,
+30000 is the reference-quality figure. On a mobile RTX 2070 expect roughly
+10–25 minutes at 7000 for a 40-photo set, and proportionally longer at 30000.
+
+If OpenSplat still runs out of memory, raise `downscale` before reducing
+iterations — resolution costs memory, iterations cost only time. `trainer_args`
+passes flags straight through to the binary for anything this interface does
+not model (OpenSplat's options vary between releases, so check
+`opensplat --help` in your image).
+
+**COLMAP feature extraction stays on the CPU** in this image, because the
+jammy package is not a CUDA build; leave `COLMAP_SIFT_USE_GPU=0`. SfM is
+usually minutes, so this is rarely the bottleneck — training dominates.
+
+Example job parameters for this class of machine:
+
+```json
+{ "iterations": 7000, "downscale": 2, "matcher": "sequential", "marker_length_m": 0.15 }
+```
+
+`"matcher": "sequential"` is worth using when the photos were taken as a walk
+around the subject in order — it skips the all-pairs comparison and is markedly
+faster on larger sets.

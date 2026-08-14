@@ -109,3 +109,49 @@ def test_ply_to_splat_writes_two_exact_records(tmp_path):
     assert second[:6] == pytest.approx((4, 5, 6, 2, 1, 1))
     assert second[6:10] == (255, 128, 128, 255)
     assert second[10:] == (128, 255, 128, 128)
+
+
+def _trained(tmp_path, monkeypatch, params: dict) -> list[str]:
+    """Run train() with the subprocess stubbed, returning the command built."""
+    recorded: list[list[str]] = []
+
+    def fake_run(self, command, stage, start, end, progress, phase, parser=None):
+        recorded.append(list(command))
+        output = Path(command[command.index("-o") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"ply\n")
+
+    monkeypatch.setattr(ColmapOpenSplatBackend, "_run", fake_run)
+    job = make_context(tmp_path, params=params)
+    ColmapOpenSplatBackend().train(job, lambda *_: None)
+    return recorded[-1]
+
+
+def test_train_passes_downscale_and_extra_args(tmp_path, monkeypatch, stub_tools):
+    """An 8 GB laptop GPU needs the images downscaled to fit in VRAM."""
+    command = _trained(tmp_path, monkeypatch, {"iterations": 3000, "downscale": 2, "trainer_args": "--val"})
+
+    assert command[0] == "opensplat"
+    assert command[command.index("-n") + 1] == "3000"
+    assert command[command.index("-d") + 1] == "2"
+    assert command[-1] == "--val"
+
+
+@pytest.mark.parametrize("params", [{"downscale": 1}, {}])
+def test_train_omits_downscale_at_full_resolution(tmp_path, monkeypatch, stub_tools, params):
+    assert "-d" not in _trained(tmp_path, monkeypatch, params)
+
+
+def test_train_accepts_trainer_args_as_a_list(tmp_path, monkeypatch, stub_tools):
+    command = _trained(tmp_path, monkeypatch, {"trainer_args": ["--save-every", "500"]})
+    assert command[-2:] == ["--save-every", "500"]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"downscale": 0}, {"downscale": -2}, {"trainer_args": [1, 2]}, {"trainer_args": {"a": 1}}],
+)
+def test_train_rejects_bad_tuning_params(tmp_path, monkeypatch, stub_tools, params):
+    monkeypatch.setattr(ColmapOpenSplatBackend, "_run", lambda *a, **k: None)
+    with pytest.raises(ValueError):
+        ColmapOpenSplatBackend().train(make_context(tmp_path, params=params), lambda *_: None)
