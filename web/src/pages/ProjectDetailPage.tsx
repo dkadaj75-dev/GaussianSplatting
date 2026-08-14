@@ -4,10 +4,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, queryKeys } from '../lib/api';
 import { API_URL } from '../lib/env';
 import { isActive } from '../lib/jobProgress';
+import { diagnoseJob } from '../lib/diagnostics';
 import { formatBytes, selectSceneArtifact } from '../lib/artifacts';
 import { useJobProgress } from '../hooks/useJobProgress';
 import { useAppStore } from '../store/useAppStore';
 import { JobProgress, JobStatusBadge } from '../components/JobProgress';
+import { JobFailureCard, RegistrationWarning } from '../components/JobDiagnostics';
 import { ProjectStatusBadge } from './ProjectsPage';
 import { AlertIcon, CaptureIcon, ViewerIcon } from '../components/icons';
 import type { Job } from '../types';
@@ -71,6 +73,18 @@ export function ProjectDetailPage() {
     [watched, jobs],
   );
 
+  // Diagnostics describe the newest run only: an older failure must not shout
+  // over a run that has since succeeded.
+  const latestJob = useMemo(() => {
+    const newest = jobs[0] ?? null;
+    return watched && newest && watched.id === newest.id ? watched : newest;
+  }, [watched, jobs]);
+
+  const diagnostics = useMemo(
+    () => diagnoseJob(latestJob, live.messages),
+    [latestJob, live.messages],
+  );
+
   // Prefetched so "Open in viewer" is instant once a job finishes.
   const doneJobId = doneJob?.id ?? '';
   const artifactsQuery = useQuery({
@@ -88,6 +102,11 @@ export function ProjectDetailPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
   });
+
+  const goToCapture = useCallback(() => {
+    selectProject(projectId);
+    navigate('/capture');
+  }, [selectProject, projectId, navigate]);
 
   const openInViewer = useCallback(
     async (jobId: string) => {
@@ -198,10 +217,7 @@ export function ProjectDetailPage() {
         <div className="flex flex-col gap-2 sm:flex-row">
           <button
             type="button"
-            onClick={() => {
-              selectProject(project.id);
-              navigate('/capture');
-            }}
+            onClick={goToCapture}
             className="flex min-h-touch flex-1 items-center justify-center gap-2 rounded-lg border border-line px-4 text-sm font-medium transition-colors hover:bg-raised"
           >
             <CaptureIcon className="size-5" />
@@ -236,6 +252,21 @@ export function ProjectDetailPage() {
         {watched && isActive(watched.status) ? (
           <div className="mt-5">
             <JobProgress job={watched} connection={live.connection} error={live.error} />
+          </div>
+        ) : null}
+
+        {diagnostics.failure ? (
+          <div className="mt-5">
+            <JobFailureCard
+              failure={diagnostics.failure}
+              onAddPhotos={goToCapture}
+              onRetry={photoCount > 0 && !activeJob ? () => startJob.mutate() : undefined}
+              retrying={startJob.isPending}
+            />
+          </div>
+        ) : latestJob?.status === 'done' && diagnostics.registration ? (
+          <div className="mt-5">
+            <RegistrationWarning report={diagnostics.registration} onAddPhotos={goToCapture} />
           </div>
         ) : null}
 

@@ -122,6 +122,37 @@ describe('useJobProgress', () => {
     expect(result.current.job).toMatchObject({ stage: 'train', progress: 0.75 });
   });
 
+  it('keeps the distinct messages seen, so a mid-run warning survives the run', () => {
+    const { result } = renderHook(() => useJobProgress(JOB_ID));
+
+    act(() => {
+      MockWebSocket.last.accept();
+      MockWebSocket.last.deliver(frame({ message: 'matching COLMAP features complete' }));
+      MockWebSocket.last.deliver(
+        frame({
+          message: 'warning: only 12/40 photos registered - add more overlapping shots',
+          updated_at: '2026-08-14T10:00:20Z',
+        }),
+      );
+      // A repeat of the last message adds nothing.
+      MockWebSocket.last.deliver(
+        frame({
+          message: 'warning: only 12/40 photos registered - add more overlapping shots',
+          updated_at: '2026-08-14T10:00:30Z',
+        }),
+      );
+      MockWebSocket.last.deliver(
+        frame({ stage: 'train', message: 'training OpenSplat model 1/7000', updated_at: '2026-08-14T10:01:00Z' }),
+      );
+    });
+
+    expect(result.current.messages).toEqual([
+      'matching COLMAP features complete',
+      'warning: only 12/40 photos registered - add more overlapping shots',
+      'training OpenSplat model 1/7000',
+    ]);
+  });
+
   it('closes the socket and reports settlement when the job finishes', () => {
     const onSettled = vi.fn();
     const { result } = renderHook(() => useJobProgress(JOB_ID, { onSettled }));

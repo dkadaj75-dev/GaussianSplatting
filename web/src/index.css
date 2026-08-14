@@ -13,6 +13,12 @@
   --color-accent: oklch(0.73 0.14 230);
   --color-on-accent: oklch(0.16 0 0);
 
+  /* Advisory states — capture coverage, photo warnings, upload queue.
+     Gives text-ok / text-warn / text-danger plus the bg- and border- forms. */
+  --color-ok: oklch(0.76 0.15 150);
+  --color-warn: oklch(0.83 0.14 85);
+  --color-danger: oklch(0.7 0.19 25);
+
   /* Minimum touch target — PLAN.md §3 requires >= 44px. Gives h-touch / min-h-touch. */
   --spacing-touch: 2.75rem;
 }

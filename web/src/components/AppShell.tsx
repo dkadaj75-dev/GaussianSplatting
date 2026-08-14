@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import type { ComponentType, SVGProps } from 'react';
 import { CaptureIcon, ProjectsIcon, ViewerIcon } from './icons';
+import { UploadQueueIndicator } from './UploadQueueIndicator';
 
 interface NavEntry {
   to: string;
@@ -63,17 +64,23 @@ export function AppShell() {
             </NavLink>
           ))}
         </nav>
-        <p className="mt-auto px-3 text-[11px] leading-relaxed text-muted">
-          Milestone 2 · pipeline
-          <br />
-          Upload → process → view.
-        </p>
+        <div className="mt-auto flex flex-col gap-2">
+          <UploadQueueIndicator />
+          <p className="px-3 text-[11px] leading-relaxed text-muted">
+            Milestone 4 · field usability
+            <br />
+            Capture → queue → process → view.
+          </p>
+        </div>
       </aside>
 
       {/* Mobile header */}
-      <header className="safe-top flex h-14 shrink-0 items-center justify-between border-b border-line bg-sunken px-4 md:hidden">
+      <header className="safe-top flex h-14 shrink-0 items-center justify-between gap-2 border-b border-line bg-sunken px-4 md:hidden">
         <Brand />
-        <span className="text-sm text-muted">{titleForPath(pathname)}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <UploadQueueIndicator className="max-w-40" />
+          <span className="shrink-0 text-sm text-muted">{titleForPath(pathname)}</span>
+        </div>
       </header>
 
       <main className="relative min-h-0 flex-1 overflow-hidden">

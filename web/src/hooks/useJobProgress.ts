@@ -22,6 +22,14 @@ export const MAX_SOCKET_FAILURES = 3;
 /** Backoff between reconnect attempts, milliseconds. */
 export const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
 export const POLL_INTERVAL_MS = 5000;
+/**
+ * Distinct worker messages retained per job.
+ *
+ * The interesting ones (`warning: only 12/40 photos registered …`) arrive
+ * mid-run and are overwritten by later progress messages, so the failure
+ * diagnostics in `lib/diagnostics.ts` need the history, not just the latest.
+ */
+export const MAX_JOB_MESSAGES = 50;
 
 export type JobConnection =
   | 'idle'
@@ -36,6 +44,8 @@ export interface JobProgress {
   connection: JobConnection;
   /** Set while updates are degraded or unavailable; cleared on recovery. */
   error: string | null;
+  /** Distinct worker messages seen for this job, oldest first. */
+  messages: string[];
 }
 
 export interface UseJobProgressOptions {
@@ -54,9 +64,17 @@ export function useJobProgress(
   const seedFor = (id: string | null | undefined, seed: Job | null) =>
     seed && id && seed.id === id ? seed : null;
 
+  const seedMessages = (seed: Job | null) => {
+    const message = seed?.message?.trim();
+    return message ? [message] : [];
+  };
+
   const [job, setJob] = useState<Job | null>(() => seedFor(jobId, initialJob));
   const [connection, setConnection] = useState<JobConnection>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [messages, setMessages] = useState<string[]>(() =>
+    seedMessages(seedFor(jobId, initialJob)),
+  );
 
   // The job currently displayed, readable from socket callbacks without
   // re-running the effect.
@@ -70,6 +88,7 @@ export function useJobProgress(
     setJob(seeded);
     setConnection('idle');
     setError(null);
+    setMessages(seedMessages(seeded));
   }
 
   // Mirrors the rendered state into refs the socket callbacks can read. Runs
@@ -99,6 +118,14 @@ export function useJobProgress(
       latest = next;
       jobRef.current = next;
       setJob(next);
+      const message = next.message?.trim();
+      if (message) {
+        setMessages((current) =>
+          current[current.length - 1] === message
+            ? current
+            : [...current, message].slice(-MAX_JOB_MESSAGES),
+        );
+      }
       if (isTerminal(next.status) && !settled) {
         settled = true;
         onSettledRef.current?.(next);
@@ -239,5 +266,5 @@ export function useJobProgress(
   const effectiveConnection: JobConnection =
     !jobId || !enabled ? 'idle' : isTerminal(job?.status) ? 'closed' : connection;
 
-  return { job, connection: effectiveConnection, error };
+  return { job, connection: effectiveConnection, error, messages };
 }

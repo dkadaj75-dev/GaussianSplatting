@@ -63,6 +63,41 @@ export function AlertIcon(props: IconProps) {
   );
 }
 
+export function CheckIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m5 12.5 4.5 4.5L19 7.5" />
+    </Icon>
+  );
+}
+
+export function RetryIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20 12a8 8 0 1 1-2.4-5.7" />
+      <path d="M20 4v4h-4" />
+    </Icon>
+  );
+}
+
+export function UploadIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 16V5m0 0L8 9m4-4 4 4" />
+      <path d="M4 15v2.5A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V15" />
+    </Icon>
+  );
+}
+
+export function OfflineIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2.5 8.5A15.6 15.6 0 0 1 8 5.4M21.5 8.5a15.6 15.6 0 0 0-6.9-3.2M6 12.2a10.4 10.4 0 0 1 2.6-1.6M18 12.2a10.4 10.4 0 0 0-3.4-1.8M9.5 15.8a5.2 5.2 0 0 1 4.2.3" />
+      <path d="M12 19h.01M3.5 3.5l17 17" />
+    </Icon>
+  );
+}
+
 export function TrashIcon(props: IconProps) {
   return (
     <Icon {...props}>
