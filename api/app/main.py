@@ -5,6 +5,7 @@ Run locally with:  uvicorn app.main:app --reload
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -12,10 +13,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.config import Settings, get_settings
+from app.config import EventSource, Settings, get_settings
 from app.db import init_db
+from app.events import RedisEventBridge
 from app.routers import dev, jobs, measurements, photos, projects, ws
 from app.schemas import HealthResponse
+
+logger = logging.getLogger(__name__)
 
 DESCRIPTION = """
 Backend for **SplatScene** — upload photos, run the Gaussian-splatting
@@ -30,7 +34,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     init_db()
     settings.storage_dir.expanduser().mkdir(parents=True, exist_ok=True)
-    yield
+
+    # With EVENT_SOURCE=redis a single subscriber turns the worker's Redis
+    # events into in-process JobEvents, so /ws/jobs/{id} needs no changes.
+    bridge: RedisEventBridge | None = None
+    if settings.event_source == EventSource.redis:
+        bridge = RedisEventBridge(settings.redis_url)
+        await bridge.start()
+        logger.info("Job event bridge started (redis=%s)", settings.redis_url)
+    app.state.event_bridge = bridge
+
+    try:
+        yield
+    finally:
+        if bridge is not None:
+            await bridge.stop()
+            logger.info("Job event bridge stopped")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

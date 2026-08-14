@@ -1,0 +1,12 @@
+# Keep the build context small and let `npm ci` produce a clean, in-image
+# node_modules (host builds may be a different platform/arch).
+node_modules
+dist
+dev-dist
+.vite
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore

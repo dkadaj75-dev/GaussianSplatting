@@ -8,3 +8,14 @@ pydantic==2.10.4          # MIT
 pydantic-settings==2.7.0  # MIT
 python-multipart==0.0.20  # Apache-2.0 (multipart/form-data uploads)
 websockets==14.1          # BSD-3-Clause (uvicorn ws implementation)
+
+# --- Queue + worker events (WP 0.4) ----------------------------------------
+# redis-py drives the async pub/sub bridge (redis.asyncio) that turns the
+# worker's jobs:* events into WebSocket frames.
+redis==6.4.0              # MIT
+# Celery is used *send-only*: celery_app.send_task("worker.run_pipeline", ...).
+# The API never imports the worker package — only the task name crosses the
+# boundary. Hand-rolling Celery's wire protocol over kombu/redis would save a
+# few MB of image but re-implement a versioned protocol we do not own, so the
+# real client is the robust choice.
+celery[redis]==5.6.3      # BSD-3-Clause

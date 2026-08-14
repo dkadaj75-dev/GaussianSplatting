@@ -2,19 +2,17 @@
 #
 #   docker compose up --build
 #
-# Ownership note: only `api/Dockerfile` is owned by this work package (WP 0.2).
-# `web/Dockerfile` (WP 0.1) and `worker/Dockerfile` (WP 0.3) are owned by their
-# own packages and are referenced here so the compose topology is complete from
-# day one. Until those files land, bring up a subset, e.g.:
+# Wiring (WP 0.4): the API dispatches `worker.run_pipeline` onto the Redis
+# broker by task name, the worker publishes JSON progress on `jobs:{job_id}`,
+# and the API's Redis→WebSocket bridge republishes those events to
+# `/ws/jobs/{job_id}`. Photos and artifacts live on one shared volume so the
+# worker reads what the API wrote.
 #
-#   docker compose up --build api redis
-#
-# `docker compose config` will report a missing build context for any service
-# whose package directory does not exist yet — that is expected mid-Milestone-0.
+#   browser ──REST──> api ──send_task──> redis ──> worker
+#   browser <──WS──── api <──jobs:*───── redis <── worker
 
 services:
   web:
-    # Dockerfile owned by WP 0.1 (web/ package).
     build: ./web
     ports:
       - "5173:5173"
@@ -33,6 +31,11 @@ services:
       STORAGE_DIR: /srv/api/data/photos
       CORS_ORIGINS: http://localhost:5173
       REDIS_URL: redis://redis:6379/0
+      # Dispatch jobs to the Celery worker by task name (worker.run_pipeline).
+      QUEUE_MODE: celery
+      # Subscribe to the worker's jobs:* progress channels and republish them
+      # onto /ws/jobs/{id}.
+      EVENT_SOURCE: redis
       # Dev helper endpoints (POST /api/dev/jobs/{id}/advance). Set to 0 for
       # anything resembling a real deployment.
       DEV_MODE: "1"
@@ -43,12 +46,17 @@ services:
         condition: service_healthy
 
   worker:
-    # Dockerfile owned by WP 0.3 (worker/ package — may not exist yet).
     build: ./worker
     environment:
+      # Broker, result backend and progress pub/sub — one Redis for all three.
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: sqlite:////srv/api/data/splatscene.db
+      # Same root as the API's STORAGE_DIR: the worker reads the uploaded
+      # photos at {STORAGE_DIR}/{project_id}/ and writes job artifacts under
+      # {STORAGE_DIR}/projects/{project_id}/jobs/{job_id}/output/.
       STORAGE_DIR: /srv/api/data/photos
+      # `fake` produces placeholder artifacts without COLMAP/OpenSplat; Milestone 2
+      # flips this to `real` on a GPU-capable image.
+      PIPELINE_BACKEND: fake
     volumes:
       # Worker and API share the photo/artifact volume on a single node.
       - splat-data:/srv/api/data

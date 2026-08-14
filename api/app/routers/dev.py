@@ -8,11 +8,10 @@ can be demoed and tested before the Celery worker (WP 0.3) exists. They are
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session
 
 from app.deps import SessionDep, require_dev_mode
-from app.job_service import advance_job, apply_job_update, publish_job_event
-from app.models import Job, JobStatus, Project, ProjectStatus
+from app.job_service import advance_job, apply_job_update, publish_job_event, sync_project_status
+from app.models import Job
 from app.schemas import DevAdvanceRequest, JobRead
 
 router = APIRouter(
@@ -54,21 +53,7 @@ async def advance_job_endpoint(
     else:
         job = advance_job(session, job)
 
-    _sync_project_status(session, job)
+    sync_project_status(session, job)
     await publish_job_event(job)
     return job
 
-
-def _sync_project_status(session: Session, job: Job) -> None:
-    """Mirror terminal job states onto the project, like the worker will."""
-    project = session.get(Project, job.project_id)
-    if project is None:
-        return
-    if job.status == JobStatus.done:
-        project.status = ProjectStatus.ready
-    elif job.status == JobStatus.failed:
-        project.status = ProjectStatus.failed
-    else:
-        project.status = ProjectStatus.processing
-    session.add(project)
-    session.commit()

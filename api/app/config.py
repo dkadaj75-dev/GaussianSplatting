@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class QueueMode(str, Enum):
+    """How created jobs reach the processing worker."""
+
+    none = "none"
+    celery = "celery"
+
+
+class EventSource(str, Enum):
+    """Where the API's job-progress events originate."""
+
+    inprocess = "inprocess"
+    redis = "redis"
 
 
 class Settings(BaseSettings):
@@ -44,9 +59,44 @@ class Settings(BaseSettings):
     allowed_image_types: str = "image/jpeg,image/png,image/webp,image/heic,image/heif"
     max_photo_bytes: int = 50 * 1024 * 1024  # 50 MiB per photo
 
-    # --- Queue (integration point) -----------------------------------------
-    # Used by the Celery/Redis integration in WP 0.3/0.4. Unused for now.
+    # --- Queue / events (WP 0.4 integration) --------------------------------
+    # Redis is both the Celery broker and the worker's progress pub/sub bus.
     redis_url: str = "redis://localhost:6379/0"
+    # Optional dedicated broker; falls back to redis_url when unset.
+    celery_broker_url: str | None = None
+
+    # How POST /api/projects/{id}/jobs hands work to the worker:
+    #   none   — no dispatch (dev/tests: jobs stay 'queued', driven by /api/dev)
+    #   celery — celery_app.send_task(...) over the Redis broker (compose)
+    queue_mode: QueueMode = QueueMode.none
+    # Task *name* only — the API never imports the worker package.
+    celery_task_name: str = "worker.run_pipeline"
+    celery_queue: str | None = None
+
+    # Where job progress events come from:
+    #   inprocess — only the in-process bus (dev-advance endpoint, tests)
+    #   redis     — subscribe to the worker's jobs:* channels and republish
+    event_source: EventSource = EventSource.inprocess
+
+    @property
+    def broker_url(self) -> str:
+        """Celery broker URL (CELERY_BROKER_URL wins, else REDIS_URL)."""
+        return self.celery_broker_url or self.redis_url
+
+    @field_validator("celery_broker_url", mode="before")
+    @classmethod
+    def _blank_broker_is_unset(cls, value: object) -> object:
+        """Treat CELERY_BROKER_URL="" as 'not configured'."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("queue_mode", "event_source", mode="before")
+    @classmethod
+    def _normalize_mode(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @field_validator("dev_mode", mode="before")
     @classmethod

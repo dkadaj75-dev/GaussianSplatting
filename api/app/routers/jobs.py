@@ -6,6 +6,8 @@ A Job is one run of the processing pipeline (ingest → sfm → train → compre
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlmodel import select
 
@@ -49,10 +51,10 @@ async def create_job(payload: JobCreate, project: ProjectDep, session: SessionDe
     session.commit()
     session.refresh(job)
 
-    # INTEGRATION POINT — see app.job_service.enqueue_job: this is where the
-    # Celery dispatch happens once the worker (WP 0.3) exists. Today it is a
-    # no-op and the job stays 'queued'.
-    task_id = enqueue_job(job)
+    # Hand the job to the worker (QUEUE_MODE=celery); a no-op under the default
+    # QUEUE_MODE=none, where the job stays 'queued' for /api/dev/jobs/{id}/advance.
+    # Off-loaded to a thread: the broker handshake is blocking socket I/O.
+    task_id = await asyncio.to_thread(enqueue_job, job)
     if task_id:
         job.task_id = task_id
         session.add(job)
