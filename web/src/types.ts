@@ -26,23 +26,42 @@ export type ProjectStatus = 'draft' | 'processing' | 'ready' | 'failed';
 /** A point in scene space. SfM units, not metres — see `Calibration`. */
 export type Point3 = [number, number, number];
 
+/** How a project got its scale (PLAN.md §5 paths 1 and 2). */
+export type CalibrationMethod = 'known_distance' | 'aruco';
+
+export interface CalibrationReference {
+  pointA: Point3;
+  pointB: Point3;
+  realDistanceM: number;
+}
+
 /**
  * A project's real-world scale (PLAN.md §5).
  *
  * `scale` is **metres per scene unit**: multiply a scene-unit length by it to
  * get metres. `null` on a project means the reconstruction is scale-ambiguous
  * and every measurement in it is relative.
+ *
+ * Only `known_distance` carries a two-point `reference` — the pair the user
+ * picked. The automatic `aruco` path (WP 5.1) instead reports how tightly its
+ * per-marker estimates agreed, which `lib/uncertainty` turns into the ± shown
+ * beside every measurement.
  */
 export interface Calibration {
   scale: number;
-  method: 'known_distance';
-  reference: {
-    pointA: Point3;
-    pointB: Point3;
-    realDistanceM: number;
-  };
+  method: CalibrationMethod;
+  /** `null` for calibrations that were not derived from a picked pair. */
+  reference: CalibrationReference | null;
   /** ISO-8601 timestamp. */
   calibratedAt: string;
+  /** ArUco only: normalised median absolute deviation of the per-marker scales (0.018 = 1.8 %). */
+  residual?: number | null;
+  /** ArUco only: how many marker observations the scale was solved from. */
+  sampleCount?: number | null;
+  /** ArUco only: the printed marker's edge length, metres. */
+  markerLengthM?: number | null;
+  /** ArUco only: the OpenCV dictionary the marker came from, e.g. `DICT_4X4_50`. */
+  markerDictionary?: string | null;
 }
 
 export interface Project {

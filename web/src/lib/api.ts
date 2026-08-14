@@ -2,6 +2,7 @@ import { apiUrl } from './env';
 import type {
   Artifact,
   Calibration,
+  CalibrationMethod,
   Job,
   JobStage,
   JobStatus,
@@ -72,13 +73,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface ApiCalibration {
   scale: number;
-  method: 'known_distance';
-  reference: {
+  method: CalibrationMethod;
+  /** Absent on an ArUco calibration: it was not solved from a picked pair. */
+  reference?: {
     point_a: Point3;
     point_b: Point3;
     real_distance_m: number;
-  };
+  } | null;
   calibrated_at: string;
+  /** ArUco only (`api/app/schemas.py::CalibrationRead`). */
+  residual?: number | null;
+  sample_count?: number | null;
+  marker_length_m?: number | null;
+  marker_dictionary?: string | null;
 }
 
 export interface ApiProject {
@@ -140,12 +147,21 @@ export function toCalibration(raw: ApiCalibration | null | undefined): Calibrati
   return {
     scale: raw.scale,
     method: raw.method ?? 'known_distance',
-    reference: {
-      pointA: reference?.point_a ?? [0, 0, 0],
-      pointB: reference?.point_b ?? [0, 0, 0],
-      realDistanceM: reference?.real_distance_m ?? 0,
-    },
+    // A missing reference stays missing rather than becoming a zero-length
+    // segment at the origin — the viewer draws the reference pair, and drawing
+    // one that never existed would be a lie about where the scale came from.
+    reference: reference
+      ? {
+          pointA: reference.point_a ?? [0, 0, 0],
+          pointB: reference.point_b ?? [0, 0, 0],
+          realDistanceM: reference.real_distance_m ?? 0,
+        }
+      : null,
     calibratedAt: raw.calibrated_at,
+    residual: raw.residual ?? null,
+    sampleCount: raw.sample_count ?? null,
+    markerLengthM: raw.marker_length_m ?? null,
+    markerDictionary: raw.marker_dictionary ?? null,
   };
 }
 

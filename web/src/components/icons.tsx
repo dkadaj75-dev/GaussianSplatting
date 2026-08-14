@@ -98,6 +98,66 @@ export function OfflineIcon(props: IconProps) {
   );
 }
 
+/** Measure tools (WP 5.2) — a matched set at a glance in the tool switcher. */
+
+export function DistanceIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 19 19 5" />
+      <circle cx="5" cy="19" r="2" />
+      <circle cx="19" cy="5" r="2" />
+    </Icon>
+  );
+}
+
+export function PathIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 18 9 8l5 6 6-9" />
+      <circle cx="4" cy="18" r="1.6" />
+      <circle cx="14" cy="14" r="1.6" />
+      <circle cx="20" cy="5" r="1.6" />
+    </Icon>
+  );
+}
+
+export function HeightIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 19h18" />
+      <path d="M12 17V5m0 0-3 3m3-3 3 3" />
+      <circle cx="12" cy="4.5" r="1.4" />
+    </Icon>
+  );
+}
+
+export function AngleIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 19h15M5 19 16 6" />
+      <path d="M13 19a8 8 0 0 0-2-5.2" />
+    </Icon>
+  );
+}
+
+export function DownloadIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 4v11m0 0 4-4m-4 4-4-4" />
+      <path d="M4 16v1.5A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V16" />
+    </Icon>
+  );
+}
+
+export function UndoIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 12a8 8 0 1 1 2.4 5.7" />
+      <path d="M4 4v4h4" />
+    </Icon>
+  );
+}
+
 export function TrashIcon(props: IconProps) {
   return (
     <Icon {...props}>

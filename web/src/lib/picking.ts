@@ -175,6 +175,153 @@ function normalized(direction: Vec3Like): Vec3Like {
   return { x: direction.x / length, y: direction.y / length, z: direction.z / length };
 }
 
+/** Neighbours averaged into a spacing estimate. Enough to survive one outlier. */
+const SPACING_NEIGHBOURS = 8;
+
+export interface SpacingOptions {
+  /** Same budget as a pick, so a spacing estimate costs one more pass, not more. */
+  maxSamples?: number;
+  /** How many nearest neighbours to median over. */
+  neighbours?: number;
+}
+
+/**
+ * Local splat spacing around `point`, in scene units — the median distance to
+ * its nearest few neighbouring centres.
+ *
+ * This is the resolution of a pick: a tap snaps to a Gaussian centre, so the
+ * true surface point can be about half a spacing away in any direction. It
+ * feeds the density half of the uncertainty estimate (PLAN.md §4).
+ *
+ * Deliberately measured over the **same strided sample** the pick itself used
+ * rather than the full cloud. Correcting for the stride would report the
+ * spacing of splats the picker never looked at, which is not the resolution
+ * the user actually got.
+ *
+ * Returns `null` when the cloud is too small to have neighbours. Allocates one
+ * fixed-size scratch array, nothing per centre.
+ */
+export function estimateLocalSpacing(
+  point: Point3,
+  centers: SplatCenters,
+  options: SpacingOptions = {},
+): number | null {
+  const maxSamples = options.maxSamples ?? DEFAULT_PICK_OPTIONS.maxSamples;
+  const wanted = Math.max(1, Math.floor(options.neighbours ?? SPACING_NEIGHBOURS));
+
+  const count = Math.max(0, Math.floor(centers.count));
+  if (count === 0) return null;
+
+  const stride = pickStride(count, maxSamples);
+  const scratch: Vec3Like = { x: 0, y: 0, z: 0 };
+  // Ascending list of the closest distances seen so far, fixed length.
+  const nearest = new Float64Array(wanted).fill(Number.POSITIVE_INFINITY);
+  let found = 0;
+
+  for (let index = 0; index < count; index += stride) {
+    centers.getCenter(index, scratch);
+    const dx = scratch.x - point[0];
+    const dy = scratch.y - point[1];
+    const dz = scratch.z - point[2];
+    const distanceSq = dx * dx + dy * dy + dz * dz;
+    // The picked centre itself (and any exact duplicate of it) says nothing
+    // about spacing.
+    if (!(distanceSq > 0)) continue;
+    if (distanceSq >= nearest[wanted - 1]) continue;
+
+    let slot = wanted - 1;
+    while (slot > 0 && nearest[slot - 1] > distanceSq) {
+      nearest[slot] = nearest[slot - 1];
+      slot -= 1;
+    }
+    nearest[slot] = distanceSq;
+    found = Math.min(found + 1, wanted);
+  }
+
+  if (found === 0) return null;
+  // Median of what we found — one splat sitting unusually close (a duplicate
+  // of the surface) must not halve the reported spacing.
+  const middle = nearest[Math.floor((found - 1) / 2)];
+  return Number.isFinite(middle) ? Math.sqrt(middle) : null;
+}
+
+export interface SceneSpacingOptions extends SpacingOptions {
+  /** How many places in the cloud to measure spacing at. */
+  probes?: number;
+}
+
+/**
+ * Typical splat spacing across the whole scene, in scene units.
+ *
+ * Measures {@link estimateLocalSpacing} at a handful of places spread through
+ * the cloud and takes the median, so one dense probe (or one in the middle of
+ * a sparse background) does not set the figure for the scene.
+ *
+ * Runs as **one** pass over the strided sample, updating every probe as it
+ * goes: the memory read is what costs, not the arithmetic. That keeps a
+ * scene-wide estimate to roughly the price of a single pick, which is why the
+ * viewer can afford to run it once a scene finishes loading and give every
+ * measurement an uncertainty before the user has picked anything.
+ */
+export function estimateSceneSpacing(
+  centers: SplatCenters,
+  options: SceneSpacingOptions = {},
+): number | null {
+  const maxSamples = options.maxSamples ?? DEFAULT_PICK_OPTIONS.maxSamples;
+  const wanted = Math.max(1, Math.floor(options.neighbours ?? SPACING_NEIGHBOURS));
+  const probeCount = Math.max(1, Math.floor(options.probes ?? 12));
+
+  const count = Math.max(0, Math.floor(centers.count));
+  if (count < 2) return null;
+
+  const stride = pickStride(count, maxSamples);
+  const scratch: Vec3Like = { x: 0, y: 0, z: 0 };
+
+  // Probe points, spread evenly through the cloud's index order. Splat files
+  // are not spatially sorted, but they are not adversarially ordered either.
+  const probes: Point3[] = [];
+  for (let i = 0; i < probeCount; i += 1) {
+    const index = Math.min(count - 1, Math.floor(((i + 0.5) * count) / probeCount));
+    centers.getCenter(index, scratch);
+    probes.push([scratch.x, scratch.y, scratch.z]);
+  }
+
+  const nearest = probes.map(() => new Float64Array(wanted).fill(Number.POSITIVE_INFINITY));
+  const found = new Int32Array(probes.length);
+
+  for (let index = 0; index < count; index += stride) {
+    centers.getCenter(index, scratch);
+    for (let p = 0; p < probes.length; p += 1) {
+      const probe = probes[p];
+      const dx = scratch.x - probe[0];
+      const dy = scratch.y - probe[1];
+      const dz = scratch.z - probe[2];
+      const distanceSq = dx * dx + dy * dy + dz * dz;
+      if (!(distanceSq > 0)) continue;
+      const list = nearest[p];
+      if (distanceSq >= list[wanted - 1]) continue;
+      let slot = wanted - 1;
+      while (slot > 0 && list[slot - 1] > distanceSq) {
+        list[slot] = list[slot - 1];
+        slot -= 1;
+      }
+      list[slot] = distanceSq;
+      found[p] = Math.min(found[p] + 1, wanted);
+    }
+  }
+
+  const spacings: number[] = [];
+  for (let p = 0; p < probes.length; p += 1) {
+    if (found[p] === 0) continue;
+    const middle = nearest[p][Math.floor((found[p] - 1) / 2)];
+    if (Number.isFinite(middle)) spacings.push(Math.sqrt(middle));
+  }
+  if (spacings.length === 0) return null;
+
+  spacings.sort((a, b) => a - b);
+  return spacings[Math.floor((spacings.length - 1) / 2)];
+}
+
 /**
  * The splat centre a ray "hits", or `null` when the ray passes through empty
  * space.

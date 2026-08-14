@@ -433,3 +433,320 @@ describe('picking feedback', () => {
     expect(result.current.overlayItems).toHaveLength(0);
   });
 });
+
+// --- WP 5.2: the other three tools, and the ± ------------------------------
+
+/** Three points on the y = 0 floor, spread out enough to define a plane. */
+const FLOOR: Point3[] = [
+  [0, 0, 0],
+  [2, 0, 0],
+  [0, 0, 2],
+];
+
+/** A pick that reports how good it was, the way SplatViewer does. */
+const QUALITY = { rayDistance: 0.01, spacing: 0.04 };
+
+describe('measurement tools', () => {
+  it('POSTs a path as its vertices and total length', async () => {
+    mockApi([
+      { match: (url, method) => url.endsWith('/measurements') && method === 'GET', body: [] },
+      {
+        match: (url, method) => url.endsWith('/measurements') && method === 'POST',
+        body: apiMeasurement({ id: 'p', kind: 'polyline', points: [A, B, [3, 4, 5]], value: 10 }),
+        status: 201,
+      },
+    ]);
+
+    const { result } = renderSession('p1');
+    await waitFor(() => expect(result.current.measurementsPending).toBe(false));
+
+    await act(async () => result.current.selectTool('polyline'));
+    await act(async () => result.current.handlePick(A));
+    await act(async () => result.current.handlePick(B));
+    await act(async () => result.current.handlePick([3, 4, 5]));
+    // Nothing is saved until the path is closed.
+    expect(calls.some((call) => call.method === 'POST')).toBe(false);
+    expect(result.current.canFinish).toBe(true);
+
+    await act(async () => result.current.finishPath());
+    await waitFor(() => expect(calls.some((call) => call.method === 'POST')).toBe(true));
+    expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+      kind: 'polyline',
+      points: [A, B, [3, 4, 5]],
+      value: 10,
+      unit: 'scene',
+      label: 'M1',
+    });
+  });
+
+  it('closes a path on a double-tap', async () => {
+    mockApi([
+      { match: (url, method) => url.endsWith('/measurements') && method === 'GET', body: [] },
+      {
+        match: (url, method) => url.endsWith('/measurements') && method === 'POST',
+        body: apiMeasurement({ id: 'p', kind: 'polyline' }),
+        status: 201,
+      },
+    ]);
+
+    const { result } = renderSession('p1');
+    await waitFor(() => expect(result.current.measurementsPending).toBe(false));
+
+    await act(async () => result.current.selectTool('polyline'));
+    await act(async () => result.current.handlePick(A));
+    await act(async () => result.current.handlePick(B));
+    await act(async () => result.current.handlePick(B, { ...QUALITY, doubleTap: true }));
+
+    await waitFor(() => expect(calls.some((call) => call.method === 'POST')).toBe(true));
+    const post = calls.find((call) => call.method === 'POST')?.body as { points: Point3[] };
+    // The second tap of the double-tap closes the path; it does not add a point.
+    expect(post.points).toEqual([A, B]);
+  });
+
+  it('POSTs a height together with the plane it was measured against', async () => {
+    mockApi([
+      { match: (url, method) => url.endsWith('/measurements') && method === 'GET', body: [] },
+      {
+        match: (url, method) => url.endsWith('/measurements') && method === 'POST',
+        body: apiMeasurement({ id: 'h', kind: 'height' }),
+        status: 201,
+      },
+    ]);
+
+    const { result } = renderSession('p1');
+    await waitFor(() => expect(result.current.measurementsPending).toBe(false));
+
+    await act(async () => result.current.selectTool('height'));
+    expect(result.current.prompt).toMatch(/three points/i);
+    for (const point of FLOOR) await act(async () => result.current.handlePick(point));
+    expect(result.current.groundPlane).not.toBeNull();
+
+    await act(async () => result.current.handlePick([1, 2.5, 1]));
+    await waitFor(() => expect(calls.some((call) => call.method === 'POST')).toBe(true));
+    expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+      kind: 'height',
+      points: [...FLOOR, [1, 2.5, 1]],
+      value: 2.5,
+      unit: 'scene',
+      label: 'M1',
+    });
+  });
+
+  it('keeps the ground plane for the next height, and can forget it', async () => {
+    mockApi([
+      { match: (url, method) => url.endsWith('/measurements') && method === 'GET', body: [] },
+    ]);
+
+    const { result } = renderSession(null);
+    await act(async () => result.current.selectTool('height'));
+    for (const point of FLOOR) await act(async () => result.current.handlePick(point));
+    await act(async () => result.current.handlePick([1, 2.5, 1]));
+    expect(result.current.measurements).toHaveLength(1);
+
+    // A second height needs one tap, not four.
+    await act(async () => result.current.handlePick([1, 1, 1]));
+    expect(result.current.measurements).toHaveLength(2);
+
+    await act(async () => result.current.clearGroundPlane());
+    expect(result.current.groundPlane).toBeNull();
+    expect(result.current.prompt).toMatch(/three points/i);
+  });
+
+  it('rejects three ground-plane points in a line, keeping the good two', async () => {
+    mockApi([]);
+    const { result } = renderSession(null);
+
+    await act(async () => result.current.selectTool('height'));
+    await act(async () => result.current.handlePick([0, 0, 0]));
+    await act(async () => result.current.handlePick([1, 0, 0]));
+    await act(async () => result.current.handlePick([2, 0, 0]));
+
+    expect(result.current.notice).toMatch(/in a line/i);
+    expect(result.current.groundPlane).toBeNull();
+    // The replacement third point finishes the plane on its own.
+    await act(async () => result.current.handlePick([0, 0, 2]));
+    expect(result.current.groundPlane).not.toBeNull();
+  });
+
+  it('POSTs an angle in degrees, vertex first', async () => {
+    mockApi([
+      { match: (url, method) => url.endsWith('/measurements') && method === 'GET', body: [] },
+      {
+        match: (url, method) => url.endsWith('/measurements') && method === 'POST',
+        body: apiMeasurement({ id: 'a', kind: 'angle', unit: 'deg', value: 90 }),
+        status: 201,
+      },
+    ]);
+
+    const { result } = renderSession('p1');
+    await waitFor(() => expect(result.current.measurementsPending).toBe(false));
+
+    await act(async () => result.current.selectTool('angle'));
+    expect(result.current.prompt).toMatch(/corner/i);
+    await act(async () => result.current.handlePick([0, 0, 0]));
+    await act(async () => result.current.handlePick([1, 0, 0]));
+    await act(async () => result.current.handlePick([0, 1, 0]));
+
+    await waitFor(() => expect(calls.some((call) => call.method === 'POST')).toBe(true));
+    expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+      kind: 'angle',
+      points: [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+      value: 90,
+      unit: 'deg',
+      label: 'M1',
+    });
+  });
+
+  it('undoes the last point without leaving the tool', async () => {
+    mockApi([]);
+    const { result } = renderSession(null);
+
+    await act(async () => result.current.selectTool('polyline'));
+    await act(async () => result.current.handlePick(A));
+    await act(async () => result.current.handlePick(B));
+    expect(result.current.hasDraft).toBe(true);
+
+    await act(async () => result.current.undoPick());
+    expect(result.current.canFinish).toBe(false);
+    await act(async () => result.current.undoPick());
+    expect(result.current.hasDraft).toBe(false);
+    expect(result.current.tool).toBe('polyline');
+  });
+
+  it('draws the draft path and the ground plane while they are being placed', async () => {
+    mockApi([]);
+    const { result } = renderSession(null);
+
+    await act(async () => result.current.selectTool('polyline'));
+    await act(async () => result.current.handlePick(A));
+    await act(async () => result.current.handlePick(B));
+    expect(result.current.overlayItems).toEqual([
+      { id: 'pending-a', tone: 'pending', a: A, points: [A, B], label: '5 units' },
+    ]);
+
+    await act(async () => result.current.selectTool('height'));
+    await act(async () => result.current.handlePick(FLOOR[0]));
+    expect(result.current.overlayItems).toEqual([{ id: 'pending-plane', tone: 'pending', a: FLOOR[0] }]);
+  });
+
+  it('draws an angle with its arc and a height with its plane', async () => {
+    mockApi([]);
+    const { result } = renderSession(null);
+
+    await act(async () => result.current.selectTool('angle'));
+    await act(async () => result.current.handlePick([0, 0, 0]));
+    await act(async () => result.current.handlePick([1, 0, 0]));
+    await act(async () => result.current.handlePick([0, 1, 0]));
+
+    const angle = result.current.overlayItems[0];
+    // Drawn arm → vertex → arm, so the corner is where the lines meet.
+    expect(angle.points).toEqual([[1, 0, 0], [0, 0, 0], [0, 1, 0]]);
+    expect(angle.anchor).toEqual([0, 0, 0]);
+    expect(angle.guide!.length).toBeGreaterThan(2);
+    expect(angle.label).toBe('M1 · 90°');
+
+    await act(async () => result.current.selectTool('height'));
+    for (const point of FLOOR) await act(async () => result.current.handlePick(point));
+    await act(async () => result.current.handlePick([1, 2.5, 1]));
+
+    const height = result.current.overlayItems.find((item) => item.label?.startsWith('M2'))!;
+    expect(height.a).toEqual([1, 2.5, 1]);
+    // The drop line ends on the plane…
+    expect(height.b).toEqual([1, 0, 1]);
+    // …and the plane it was measured against is outlined.
+    expect(height.guide).toEqual([...FLOOR, FLOOR[0]]);
+  });
+});
+
+describe('uncertainty display', () => {
+  it('shows a ± on the chip once the picks report their quality', async () => {
+    mockApi([]);
+    const { result } = renderSession(null, toProject(apiProject(CALIBRATION)));
+
+    await act(async () => result.current.toggleMeasuring());
+    await act(async () => result.current.handlePick(A, QUALITY));
+    await act(async () => result.current.handlePick(B, QUALITY));
+
+    const item = result.current.overlayItems[0];
+    // 5 scene units at 0.5 m/unit, ± the picks and the 2 % manual scale.
+    expect(item.label).toBe('M1 · 2.50 m');
+    expect(item.detail).toMatch(/^± 0\.0\d m$/);
+    expect(result.current.rows[0].uncertainty?.basis).toBe('full');
+  });
+
+  it('does not invent a ± for a stored row whose picks were never seen', async () => {
+    mockApi([
+      {
+        match: (url, method) => url.endsWith('/measurements') && method === 'GET',
+        body: [apiMeasurement()],
+      },
+    ]);
+
+    const { result } = renderSession('p1', toProject(apiProject(CALIBRATION)));
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+    expect(result.current.rows[0].uncertainty?.basis).toBe('scale-only');
+    expect(result.current.overlayItems[0].detail).toBeUndefined();
+    expect(result.current.notes[0]).toMatch(/only the scene scale/i);
+  });
+
+  it('reports the scale tolerance from an ArUco residual', async () => {
+    mockApi([
+      { match: (url, method) => url.endsWith('/measurements') && method === 'GET', body: [] },
+    ]);
+
+    const aruco: ApiCalibration = {
+      scale: 0.5,
+      method: 'aruco',
+      calibrated_at: '2026-08-14T11:00:00Z',
+      residual: 0.018,
+      sample_count: 12,
+      marker_length_m: 0.15,
+      marker_dictionary: 'DICT_4X4_50',
+    };
+    const { result } = renderSession('p1', toProject(apiProject(aruco)));
+    await waitFor(() => expect(result.current.measurementsPending).toBe(false));
+
+    expect(result.current.scaleRelativeSigma).toBeCloseTo(0.018, 12);
+    expect(result.current.calibrationSummary).toMatch(/150 mm marker \(12 observations\)/);
+    // Nothing to draw: an ArUco scale has no picked reference pair.
+    expect(result.current.overlayItems).toEqual([]);
+  });
+});
+
+describe('scene-wide pick quality', () => {
+  it('gives measurements from an earlier session a ±, marked as borrowed', async () => {
+    mockApi([
+      {
+        match: (url, method) => url.endsWith('/measurements') && method === 'GET',
+        body: [apiMeasurement()],
+      },
+    ]);
+
+    const { result } = renderSession('p1', toProject(apiProject(CALIBRATION)));
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    // Nothing has been picked yet, so there is nothing to say about the picks.
+    expect(result.current.rows[0].uncertainty?.basis).toBe('scale-only');
+
+    // The viewer finishes probing the cloud: splats sit ~4 cm apart.
+    await act(async () => result.current.reportSceneSpacing(0.04));
+
+    expect(result.current.rows[0].uncertainty?.basis).toBe('assumed-spacing');
+    expect(result.current.overlayItems[0].detail).toMatch(/^± /);
+    expect(result.current.notes[0]).toMatch(/typical pick quality/i);
+  });
+
+  it('prefers the quality of real picks over the scene probe', async () => {
+    mockApi([]);
+    const { result } = renderSession(null);
+
+    await act(async () => result.current.reportSceneSpacing(1));
+    await act(async () => result.current.toggleMeasuring());
+    await act(async () => result.current.handlePick(A, QUALITY));
+    await act(async () => result.current.handlePick(B, QUALITY));
+
+    // The measurement's own picks are known, so the probe does not apply to it.
+    expect(result.current.rows[0].uncertainty?.basis).toBe('full');
+    expect(result.current.rows[0].uncertainty!.sigmaScene).toBeLessThan(0.5);
+  });
+});

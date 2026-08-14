@@ -3,6 +3,8 @@ import {
   angularRadiusForScreenRadius,
   centersFromArray,
   centersFromSplatMesh,
+  estimateLocalSpacing,
+  estimateSceneSpacing,
   pickNearestSplat,
   pickStride,
 } from './picking';
@@ -252,5 +254,124 @@ describe('centersFromSplatMesh', () => {
 
     expect(centers.count).toBe(2);
     expect(out).toEqual({ x: 1, y: 2, z: -5 });
+  });
+});
+
+describe('estimateLocalSpacing', () => {
+  /** A regular grid, 0.1 apart — a stand-in for a well-sampled surface. */
+  function grid(step: number, size: number): Point3[] {
+    const points: Point3[] = [];
+    for (let x = 0; x < size; x += 1) {
+      for (let y = 0; y < size; y += 1) points.push([x * step, y * step, 0]);
+    }
+    return points;
+  }
+
+  it('measures the distance to the nearest neighbours around a pick', () => {
+    const centers = centersFromArray(grid(0.1, 9));
+    const spacing = estimateLocalSpacing([0.4, 0.4, 0], centers);
+    // Eight neighbours: four at 0.1, four at 0.1414 — the median is 0.1.
+    expect(spacing).toBeCloseTo(0.1, 6);
+  });
+
+  it('grows with a sparser cloud, which is the whole point', () => {
+    const dense = estimateLocalSpacing([0.4, 0.4, 0], centersFromArray(grid(0.1, 9)))!;
+    const sparse = estimateLocalSpacing([1.6, 1.6, 0], centersFromArray(grid(0.4, 9)))!;
+    expect(sparse).toBeCloseTo(dense * 4, 6);
+  });
+
+  it('ignores the picked centre itself and any duplicate of it', () => {
+    const centers = centersFromArray([
+      [0, 0, 0],
+      [0, 0, 0],
+      [0.2, 0, 0],
+      [0, 0.2, 0],
+    ]);
+    expect(estimateLocalSpacing([0, 0, 0], centers)).toBeCloseTo(0.2, 12);
+  });
+
+  it('reports nothing when there is nothing to compare against', () => {
+    expect(estimateLocalSpacing([0, 0, 0], centersFromArray([]))).toBeNull();
+    expect(estimateLocalSpacing([0, 0, 0], centersFromArray([[0, 0, 0]]))).toBeNull();
+  });
+
+  it('honours the sample budget, so a pick stays inside one frame', () => {
+    let visited = 0;
+    const centers = {
+      count: 1_000_000,
+      getCenter(index: number, out: Vec3Like) {
+        visited += 1;
+        out.x = index * 0.001;
+        out.y = 0;
+        out.z = 0;
+      },
+    };
+    estimateLocalSpacing([500, 0, 0], centers, { maxSamples: 1000 });
+    expect(visited).toBeLessThanOrEqual(1000);
+  });
+
+  it('works with fewer neighbours than it asked for', () => {
+    const centers = centersFromArray([
+      [0, 0, 0],
+      [0.3, 0, 0],
+    ]);
+    expect(estimateLocalSpacing([0, 0, 0], centers, { neighbours: 8 })).toBeCloseTo(0.3, 12);
+  });
+});
+
+describe('estimateSceneSpacing', () => {
+  /** Two clouds joined: a dense patch and a sparse one, ten units apart. */
+  function mixedCloud(): Point3[] {
+    const points: Point3[] = [];
+    for (let x = 0; x < 10; x += 1) {
+      for (let y = 0; y < 10; y += 1) points.push([x * 0.1, y * 0.1, 0]);
+    }
+    for (let x = 0; x < 10; x += 1) {
+      for (let y = 0; y < 10; y += 1) points.push([10 + x * 0.5, y * 0.5, 0]);
+    }
+    return points;
+  }
+
+  it('reports the typical spacing, not the densest or the sparsest patch', () => {
+    const spacing = estimateSceneSpacing(centersFromArray(mixedCloud()), { probes: 8 })!;
+    expect(spacing).toBeGreaterThan(0.1);
+    expect(spacing).toBeLessThan(0.5);
+  });
+
+  it('lands on the same order as a local estimate, erring high', () => {
+    const grid: Point3[] = [];
+    for (let x = 0; x < 12; x += 1) {
+      for (let y = 0; y < 12; y += 1) grid.push([x * 0.2, y * 0.2, 0]);
+    }
+    const centers = centersFromArray(grid);
+    const local = estimateLocalSpacing([1.2, 1.2, 0], centers)!;
+    const scene = estimateSceneSpacing(centers, { probes: 6 })!;
+
+    // Never optimistic: a probe that happens to land on the edge of the cloud
+    // is missing neighbours on one side and reports a wider spacing, which is
+    // the safe direction for an uncertainty to be wrong in.
+    expect(scene).toBeGreaterThanOrEqual(local);
+    expect(scene).toBeLessThan(local * 1.5);
+  });
+
+  it('reports nothing for a cloud with nothing to measure', () => {
+    expect(estimateSceneSpacing(centersFromArray([]))).toBeNull();
+    expect(estimateSceneSpacing(centersFromArray([[0, 0, 0]]))).toBeNull();
+  });
+
+  it('walks the cloud once, however many probes it uses', () => {
+    let visited = 0;
+    const centers = {
+      count: 10_000,
+      getCenter(index: number, out: Vec3Like) {
+        visited += 1;
+        out.x = index * 0.01;
+        out.y = 0;
+        out.z = 0;
+      },
+    };
+    estimateSceneSpacing(centers, { probes: 12, maxSamples: 1000 });
+    // One strided pass (1000) plus one read per probe to find where it is.
+    expect(visited).toBeLessThanOrEqual(1000 + 12);
   });
 });

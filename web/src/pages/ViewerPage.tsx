@@ -1,10 +1,12 @@
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useCallback, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAppStore } from '../store/useAppStore';
 import { api, queryKeys } from '../lib/api';
 import { useMeasureSession } from '../hooks/useMeasureSession';
 import { MeasureTools } from '../components/MeasureTools';
+import type { ReportCapture } from '../components/ExportSheet';
+import type { ViewerCapture } from '../components/SplatViewer';
 import { ViewerIcon } from '../components/icons';
 
 // three.js + the splat renderer are several hundred KB; keep them off the
@@ -53,6 +55,14 @@ export function ViewerPage() {
     projectId: resolvedProjectId,
     project: projectQuery.data,
   });
+
+  // The export sheet pulls a frame at the moment it is pressed; the viewer
+  // fills this in while a scene is loaded (WP 5.3).
+  const captureRef = useRef<ViewerCapture | null>(null);
+  const capture = useCallback<ReportCapture>(
+    (options) => captureRef.current?.capture(options) ?? null,
+    [],
+  );
 
   const load = (value: string) => {
     setViewerSrc(value);
@@ -125,9 +135,15 @@ export function ViewerPage() {
               src={viewerSrc}
               pickEnabled={session.pickEnabled}
               onPick={session.handlePick}
+              onSceneSpacing={session.reportSceneSpacing}
               overlayItems={session.overlayItems}
+              captureRef={captureRef}
             >
-              <MeasureTools session={session} />
+              <MeasureTools
+                session={session}
+                projectName={projectQuery.data?.name}
+                capture={capture}
+              />
             </SplatViewer>
           </Suspense>
         ) : (

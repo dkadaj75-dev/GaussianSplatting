@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { MutableRefObject, ReactNode } from 'react';
 import * as THREE from 'three';
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 import { AlertIcon } from './icons';
 import { MeasurementOverlay } from '../lib/measurementOverlay';
 import type { OverlayItem } from '../lib/measurementOverlay';
+import { composeFrame, isFrameBlank } from '../lib/capture';
+import type { CaptionInput } from '../lib/capture';
 import {
   angularRadiusForScreenRadius,
   centersFromSplatMesh,
+  estimateLocalSpacing,
+  estimateSceneSpacing,
   pickNearestSplat,
 } from '../lib/picking';
 import type { Point3 } from '../types';
@@ -27,6 +31,31 @@ const TAP_RADIUS_PX = 22;
 
 /** Splat centres examined per pick; larger clouds are strided (WP 3.1). */
 const MAX_PICK_SAMPLES = 200_000;
+
+/** How close together, in time and space, two taps count as a double-tap. */
+const DOUBLE_TAP_MS = 350;
+const DOUBLE_TAP_PX = 28;
+
+/** What a tap learnt about its own accuracy (WP 5.2, see `lib/uncertainty`). */
+export interface PickDetail {
+  /** Perpendicular distance from the tap ray to the splat it snapped to. */
+  rayDistance: number;
+  /** Local splat spacing there, or `null` when the cloud is too sparse to tell. */
+  spacing: number | null;
+  /** True when this was the second tap of a double-tap. */
+  doubleTap: boolean;
+}
+
+/** Imperative handle for the report screenshot (WP 5.3). */
+export interface ViewerCapture {
+  /**
+   * Renders and composites the current frame with the measurement labels.
+   *
+   * Must run to completion inside one task: with `preserveDrawingBuffer` off,
+   * the WebGL buffer is only readable between the draw and the next composite.
+   */
+  capture: (options?: { caption?: CaptionInput | null; pixelRatio?: number }) => HTMLCanvasElement | null;
+}
 
 type Phase = 'idle' | 'downloading' | 'processing' | 'ready' | 'error';
 
@@ -52,9 +81,23 @@ export interface SplatViewerProps {
    */
   pickEnabled?: boolean;
   /** A tap resolved to this scene-space point, or `null` when it hit nothing. */
-  onPick?: (point: Point3 | null) => void;
+  onPick?: (point: Point3 | null, detail?: PickDetail) => void;
+  /**
+   * Typical splat spacing in the loaded scene, in scene units (WP 5.2).
+   *
+   * Measured once, just after the scene is ready, so a measurement taken in an
+   * earlier session can still be given an uncertainty without the user having
+   * to pick anything first. `null` when the cloud is too small to tell.
+   */
+  onSceneSpacing?: (spacing: number | null) => void;
   /** Markers, segments and labels to draw in the scene. */
   overlayItems?: readonly OverlayItem[];
+  /**
+   * Filled with the screenshot handle while a scene is loaded (WP 5.3).
+   * A ref rather than a callback: the export button needs to *pull* a frame at
+   * the moment it is pressed.
+   */
+  captureRef?: MutableRefObject<ViewerCapture | null>;
   /** Overlay UI (toolbar, panels, sheets) stacked above the canvas. */
   children?: ReactNode;
 }
@@ -147,7 +190,9 @@ export function SplatViewer({
   onError,
   pickEnabled = false,
   onPick,
+  onSceneSpacing,
   overlayItems,
+  captureRef,
   children,
 }: SplatViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -169,11 +214,13 @@ export function SplatViewer({
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
   const onPickRef = useRef(onPick);
+  const onSceneSpacingRef = useRef(onSceneSpacing);
   const pickEnabledRef = useRef(pickEnabled);
   useEffect(() => {
     onReadyRef.current = onReady;
     onErrorRef.current = onError;
     onPickRef.current = onPick;
+    onSceneSpacingRef.current = onSceneSpacing;
     pickEnabledRef.current = pickEnabled;
   });
 
@@ -331,6 +378,35 @@ export function SplatViewer({
       };
     }
 
+    // --- Report screenshot (WP 5.3) ------------------------------------------
+
+    if (captureRef) {
+      captureRef.current = {
+        capture(captureOptions = {}) {
+          const width = Math.max(container.clientWidth, 1);
+          const height = Math.max(container.clientHeight, 1);
+          // Render *now*, in this task: the drawing buffer is discarded at the
+          // next composite, so anything asynchronous between here and the
+          // `drawImage` below would read an empty frame.
+          overlay?.update(camera, width, height);
+          viewer?.render();
+
+          const composed = composeFrame({
+            source: canvas,
+            width,
+            height,
+            pixelRatio:
+              captureOptions.pixelRatio ??
+              Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO),
+            labels: overlay?.labelSnapshot() ?? [],
+            caption: captureOptions.caption ?? null,
+          });
+          if (!composed) return null;
+          return isFrameBlank(composed) ? null : composed;
+        },
+      };
+    }
+
     // Markers must hold a constant pixel size and the label chips must track
     // their anchors, both of which change every time the camera moves.
     let frame = 0;
@@ -345,8 +421,12 @@ export function SplatViewer({
     const rayOrigin = new THREE.Vector3();
     const rayDirection = new THREE.Vector3();
     const pickScratch = new THREE.Vector3();
+    let spacingTimer = 0;
 
-    const pickAt = (clientX: number, clientY: number): Point3 | null => {
+    const pickAt = (
+      clientX: number,
+      clientY: number,
+    ): { point: Point3; rayDistance: number; spacing: number | null } | null => {
       const mesh = viewer?.splatMesh;
       if (!mesh) return null;
       const rect = canvas.getBoundingClientRect();
@@ -358,22 +438,26 @@ export function SplatViewer({
       rayOrigin.setFromMatrixPosition(camera.matrixWorld);
       rayDirection.set(ndcX, ndcY, 0.5).unproject(camera).sub(rayOrigin).normalize();
 
-      const hit = pickNearestSplat(
-        rayOrigin,
-        rayDirection,
-        centersFromSplatMesh(mesh, pickScratch),
-        {
-          angularRadius: angularRadiusForScreenRadius(TAP_RADIUS_PX, camera.fov, rect.height),
-          // A floor keeps a tap landing right in front of the lens pickable;
-          // a ceiling stops a distant tap swallowing a quarter of the scene.
-          minRadius: sceneRadius * 0.002,
-          maxRadius: sceneRadius * 0.25,
-          nearDistance: camera.near,
-          farDistance: camera.far,
-          maxSamples: MAX_PICK_SAMPLES,
-        },
-      );
-      return hit?.point ?? null;
+      const centers = centersFromSplatMesh(mesh, pickScratch);
+      const hit = pickNearestSplat(rayOrigin, rayDirection, centers, {
+        angularRadius: angularRadiusForScreenRadius(TAP_RADIUS_PX, camera.fov, rect.height),
+        // A floor keeps a tap landing right in front of the lens pickable;
+        // a ceiling stops a distant tap swallowing a quarter of the scene.
+        minRadius: sceneRadius * 0.002,
+        maxRadius: sceneRadius * 0.25,
+        nearDistance: camera.near,
+        farDistance: camera.far,
+        maxSamples: MAX_PICK_SAMPLES,
+      });
+      if (!hit) return null;
+
+      // A second pass over the same strided sample: how tightly packed the
+      // splats are here is what bounds the accuracy of this pick (WP 5.2).
+      return {
+        point: hit.point,
+        rayDistance: hit.rayDistance,
+        spacing: estimateLocalSpacing(hit.point, centers, { maxSamples: MAX_PICK_SAMPLES }),
+      };
     };
 
     const moveCrosshair = (clientX: number, clientY: number) => {
@@ -412,6 +496,9 @@ export function SplatViewer({
       }
     };
 
+    // Second tap of a double-tap: what closes an open path (WP 5.2).
+    let lastTap: { time: number; x: number; y: number } | null = null;
+
     const onPointerUp = (event: PointerEvent) => {
       const tapped = candidate?.id === event.pointerId && activePointers.size === 1;
       activePointers.delete(event.pointerId);
@@ -419,7 +506,20 @@ export function SplatViewer({
       // A finger leaves no cursor behind, so the hint has to go with it.
       if (event.pointerType !== 'mouse') hideCrosshair();
       if (!tapped || !pickEnabledRef.current) return;
-      onPickRef.current?.(pickAt(event.clientX, event.clientY));
+
+      const now = performance.now();
+      const doubleTap =
+        lastTap !== null &&
+        now - lastTap.time < DOUBLE_TAP_MS &&
+        Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < DOUBLE_TAP_PX;
+      // A third tap must not read as another double-tap.
+      lastTap = doubleTap ? null : { time: now, x: event.clientX, y: event.clientY };
+
+      const hit = pickAt(event.clientX, event.clientY);
+      onPickRef.current?.(
+        hit?.point ?? null,
+        hit ? { rayDistance: hit.rayDistance, spacing: hit.spacing, doubleTap } : undefined,
+      );
     };
 
     const onPointerCancel = (event: PointerEvent) => {
@@ -455,6 +555,19 @@ export function SplatViewer({
           setPhase('ready');
           setPercent(100);
           onReadyRef.current?.();
+
+          // Scene-wide splat spacing, for the uncertainty model (WP 5.2). One
+          // pass over the cloud, deferred a tick so it cannot delay the first
+          // frame the user has been waiting for.
+          spacingTimer = window.setTimeout(() => {
+            const mesh = viewer?.splatMesh;
+            if (cancelled || !mesh) return;
+            onSceneSpacingRef.current?.(
+              estimateSceneSpacing(centersFromSplatMesh(mesh, pickScratch), {
+                maxSamples: MAX_PICK_SAMPLES,
+              }),
+            );
+          }, 0);
         })
         .catch((error: unknown) => {
           if (cancelled) return;
@@ -471,7 +584,9 @@ export function SplatViewer({
       cancelled = true;
       resetViewRef.current = null;
       flipUpRef.current = null;
+      if (captureRef) captureRef.current = null;
       cancelAnimationFrame(frame);
+      clearTimeout(spacingTimer);
       canvas.removeEventListener('webglcontextlost', onContextLost);
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('pointermove', onPointerMove);
@@ -493,7 +608,7 @@ export function SplatViewer({
           canvas.remove();
         });
     };
-  }, [src, upKey, reloadToken]);
+  }, [src, upKey, reloadToken, captureRef]);
 
   // `overlayEpoch` re-runs this once the WebGL effect has built the overlay,
   // so items handed down before the scene existed still land.

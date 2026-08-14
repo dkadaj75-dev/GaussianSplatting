@@ -20,7 +20,7 @@
 import * as THREE from 'three';
 import type { Point3 } from '../types';
 
-export type OverlayTone = 'measure' | 'pending' | 'calibration';
+export type OverlayTone = 'measure' | 'pending' | 'calibration' | 'plane';
 
 export interface OverlayItem {
   id: string;
@@ -30,6 +30,25 @@ export interface OverlayItem {
   b?: Point3 | null;
   /** Chip text at the segment midpoint (or at `a` for a lone point). */
   label?: string | null;
+  /**
+   * Dimmer second line under the label — the ± of a measurement. Kept apart
+   * from `label` so the uncertainty can be styled down, and so the value it
+   * qualifies stays greppable on its own.
+   */
+  detail?: string | null;
+  /**
+   * A path of three or more vertices (WP 5.2). When present it replaces
+   * `a`/`b` for drawing: markers at every vertex, segments in between.
+   */
+  points?: readonly Point3[] | null;
+  /**
+   * A marker-less line strip drawn faintly: an angle's arc, a height's drop
+   * line, the triangle of a ground plane. Never gets its own markers — it
+   * explains a measurement rather than being one.
+   */
+  guide?: readonly Point3[] | null;
+  /** Overrides where the chip hangs; defaults to the midpoint of the geometry. */
+  anchor?: Point3 | null;
 }
 
 const TONE_COLOR: Record<OverlayTone, number> = {
@@ -38,7 +57,19 @@ const TONE_COLOR: Record<OverlayTone, number> = {
   pending: 0xffffff,
   // Amber, deliberately unlike a measurement: this segment is an input, not a result.
   calibration: 0xfbbf24,
+  // Green, matching --color-ok: the ground plane is a datum, not a result either.
+  plane: 0x5cd6a0,
 };
+
+/** Where a label chip ended up on screen, for the report screenshot (WP 5.3). */
+export interface OverlayLabelSnapshot {
+  text: string;
+  detail: string | null;
+  tone: OverlayTone;
+  /** CSS pixels from the top-left of the canvas, at the chip's anchor point. */
+  x: number;
+  y: number;
+}
 
 /** Marker core radius and dark-ring radius, in CSS pixels. */
 const CORE_PX = 4.5;
@@ -53,6 +84,13 @@ interface ItemHandle {
   chip: HTMLDivElement | null;
   /** Where the chip sits: segment midpoint, or the lone point. */
   anchor: THREE.Vector3;
+  /** Kept for {@link MeasurementOverlay.labelSnapshot}. */
+  text: string | null;
+  detail: string | null;
+  tone: OverlayTone;
+  /** Last projected chip position, CSS pixels; `null` while off-screen. */
+  screenX: number | null;
+  screenY: number | null;
 }
 
 export class MeasurementOverlay {
@@ -67,6 +105,9 @@ export class MeasurementOverlay {
   private readonly disposables: { dispose(): void }[] = [];
   private items: ItemHandle[] = [];
   private pixelScale = 0.002;
+  /** Per-frame scratch — never allocate inside {@link update}. */
+  private readonly cameraPosition = new THREE.Vector3();
+  private readonly projected = new THREE.Vector3();
 
   constructor(labelHost: HTMLElement) {
     this.labelHost = labelHost;
@@ -86,23 +127,69 @@ export class MeasurementOverlay {
 
     for (const item of items) {
       const color = TONE_COLOR[item.tone];
-      const handle: ItemHandle = { markers: [], chip: null, anchor: new THREE.Vector3() };
-      const a = new THREE.Vector3().fromArray(item.a);
-      const b = item.b ? new THREE.Vector3().fromArray(item.b) : null;
+      const handle: ItemHandle = {
+        markers: [],
+        chip: null,
+        anchor: new THREE.Vector3(),
+        text: item.label ?? null,
+        detail: item.detail ?? null,
+        tone: item.tone,
+        screenX: null,
+        screenY: null,
+      };
 
-      handle.markers.push(this.addMarker(a));
-      if (b) handle.markers.push(this.addMarker(b));
+      // A path of vertices (WP 5.2) or the classic one/two-point form.
+      const path: THREE.Vector3[] =
+        item.points && item.points.length > 0
+          ? item.points.map((point) => new THREE.Vector3().fromArray(point))
+          : [
+              new THREE.Vector3().fromArray(item.a),
+              ...(item.b ? [new THREE.Vector3().fromArray(item.b)] : []),
+            ];
 
-      if (b) {
-        this.addSegment(a, b, color);
-        handle.anchor.addVectors(a, b).multiplyScalar(0.5);
-      } else {
-        handle.anchor.copy(a);
+      for (const vertex of path) handle.markers.push(this.addMarker(vertex));
+      for (let i = 1; i < path.length; i += 1) this.addSegment(path[i - 1], path[i], color);
+
+      if (item.guide && item.guide.length > 1) {
+        this.addGuide(
+          item.guide.map((point) => new THREE.Vector3().fromArray(point)),
+          color,
+        );
       }
 
-      if (item.label) handle.chip = this.addChip(item.label, item.tone);
+      if (item.anchor) {
+        handle.anchor.fromArray(item.anchor);
+      } else if (path.length >= 2) {
+        // Middle of the middle segment: on a path that doubles back, the
+        // midpoint of the whole thing can land nowhere near the geometry.
+        const middle = Math.max(0, Math.floor((path.length - 1) / 2));
+        handle.anchor.addVectors(path[middle], path[middle + 1]).multiplyScalar(0.5);
+      } else {
+        handle.anchor.copy(path[0]);
+      }
+
+      if (item.label) handle.chip = this.addChip(item.label, item.detail ?? null, item.tone);
       this.items.push(handle);
     }
+  }
+
+  /**
+   * Where every chip currently sits on screen, for compositing the report
+   * screenshot (WP 5.3). Off-screen chips are omitted rather than clamped.
+   */
+  labelSnapshot(): OverlayLabelSnapshot[] {
+    const snapshot: OverlayLabelSnapshot[] = [];
+    for (const item of this.items) {
+      if (!item.text || item.screenX === null || item.screenY === null) continue;
+      snapshot.push({
+        text: item.text,
+        detail: item.detail,
+        tone: item.tone,
+        x: item.screenX,
+        y: item.screenY,
+      });
+    }
+    return snapshot;
   }
 
   /**
@@ -115,13 +202,16 @@ export class MeasurementOverlay {
     // World units per CSS pixel, per unit of distance from the camera.
     this.pixelScale = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / height;
 
-    const cameraPosition = camera.getWorldPosition(new THREE.Vector3());
+    // Scratch vectors, reused: this runs on every animation frame, and a pair
+    // of allocations per marker per frame is exactly the kind of garbage that
+    // shows up as jank on a phone.
+    camera.getWorldPosition(this.cameraPosition);
     for (const item of this.items) {
       for (const marker of item.markers) {
-        const distance = marker.group.position.distanceTo(cameraPosition);
+        const distance = marker.group.position.distanceTo(this.cameraPosition);
         marker.group.scale.setScalar(Math.max(distance * this.pixelScale, 1e-6));
       }
-      if (item.chip) this.placeChip(item.chip, item.anchor, camera, width, height);
+      this.placeChip(item, camera, width, height);
     }
   }
 
@@ -217,37 +307,89 @@ export class MeasurementOverlay {
     this.ghostScene.add(ghost);
   }
 
-  private addChip(text: string, tone: OverlayTone): HTMLDivElement {
+  /** A faint, marker-less strip: arcs, drop lines, ground-plane triangles. */
+  private addGuide(points: THREE.Vector3[], color: number): void {
+    const geometry = this.track(new THREE.BufferGeometry().setFromPoints(points));
+    const line = new THREE.Line(
+      geometry,
+      this.track(
+        new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.55,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      ),
+    );
+    line.renderOrder = 2;
+    this.group.add(line);
+
+    const ghost = new THREE.Line(
+      geometry,
+      this.track(
+        new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.25,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      ),
+    );
+    this.ghostScene.add(ghost);
+  }
+
+  private addChip(text: string, detail: string | null, tone: OverlayTone): HTMLDivElement {
     const chip = document.createElement('div');
     chip.className =
       'pointer-events-none absolute top-0 left-0 z-10 rounded-md border px-1.5 py-0.5 text-[11px] leading-tight font-semibold whitespace-nowrap tabular-nums shadow-lg';
     chip.style.background = 'rgba(10,10,10,0.88)';
     chip.style.color = '#fff';
     chip.style.borderColor =
-      tone === 'calibration' ? 'rgba(251,191,36,0.7)' : 'rgba(255,255,255,0.25)';
+      tone === 'calibration'
+        ? 'rgba(251,191,36,0.7)'
+        : tone === 'plane'
+          ? 'rgba(92,214,160,0.7)'
+          : 'rgba(255,255,255,0.25)';
     chip.style.willChange = 'transform';
     chip.textContent = text;
+
+    if (detail) {
+      // The ± rides along in its own, dimmer span: an uncertainty must be
+      // visible without competing with the number it qualifies (PLAN.md §4).
+      const uncertainty = document.createElement('span');
+      uncertainty.className = 'ml-1 font-normal opacity-70';
+      uncertainty.textContent = detail;
+      chip.appendChild(uncertainty);
+    }
+
     this.labelHost.appendChild(chip);
     return chip;
   }
 
   private placeChip(
-    chip: HTMLDivElement,
-    anchor: THREE.Vector3,
+    item: ItemHandle,
     camera: THREE.PerspectiveCamera,
     width: number,
     height: number,
   ): void {
-    const projected = anchor.clone().project(camera);
+    this.projected.copy(item.anchor).project(camera);
     // z > 1 means the point is behind the near plane; projecting it would put
     // the chip in a mirrored position on screen.
-    if (projected.z > 1) {
-      chip.style.visibility = 'hidden';
+    if (this.projected.z > 1) {
+      item.screenX = null;
+      item.screenY = null;
+      if (item.chip) item.chip.style.visibility = 'hidden';
       return;
     }
-    chip.style.visibility = 'visible';
-    const x = (projected.x * 0.5 + 0.5) * width;
-    const y = (-projected.y * 0.5 + 0.5) * height;
-    chip.style.transform = `translate(-50%,-140%) translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;
+    const x = (this.projected.x * 0.5 + 0.5) * width;
+    const y = (-this.projected.y * 0.5 + 0.5) * height;
+    item.screenX = x;
+    item.screenY = y;
+    if (!item.chip) return;
+    item.chip.style.visibility = 'visible';
+    item.chip.style.transform = `translate(-50%,-140%) translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;
   }
 }
