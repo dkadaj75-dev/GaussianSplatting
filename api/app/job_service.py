@@ -12,10 +12,12 @@ from typing import Any, Protocol
 
 from sqlmodel import Session
 
+from app.artifact_service import read_manifest_calibration
 from app.config import QueueMode, Settings, get_settings
 from app.events import job_event_bus
 from app.models import JOB_STAGE_ORDER, Job, JobStage, JobStatus, Project, ProjectStatus, utcnow
 from app.schemas import JobEvent
+from app.storage import job_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -259,12 +261,45 @@ def sync_project_status(session: Session, job: Job) -> None:
         return
     if job.status == JobStatus.done:
         project.status = ProjectStatus.ready
+        apply_manifest_calibration(project, job)
     elif job.status == JobStatus.failed:
         project.status = ProjectStatus.failed
     else:
         project.status = ProjectStatus.processing
     session.add(project)
     session.commit()
+
+
+def apply_manifest_calibration(
+    project: Project, job: Job, settings: Settings | None = None
+) -> bool:
+    """Adopt the worker's automatic scale for a finished job, if any.
+
+    A manual ``known_distance`` calibration always wins: the user measured
+    something real and typed it in, so a later marker-derived estimate must not
+    silently overwrite it. An earlier ``aruco`` figure is refreshed, because
+    that is just a newer reconstruction of the same automatic measurement.
+    Returns whether the project's calibration changed.
+    """
+    existing = project.calibration
+    if isinstance(existing, dict) and existing.get("method") != "aruco":
+        return False
+
+    settings = settings or get_settings()
+    output_dir = job_output_dir(settings.storage_dir, job.project_id, job.id)
+    calibration = read_manifest_calibration(output_dir)
+    if calibration is None:
+        return False
+
+    calibration["calibrated_at"] = utcnow().isoformat()
+    project.calibration = calibration
+    logger.info(
+        "Applied automatic calibration to project %s from job %s (scale=%g)",
+        project.id,
+        job.id,
+        calibration["scale"],
+    )
+    return True
 
 
 def _stamp_lifecycle(job: Job) -> None:

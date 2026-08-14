@@ -49,10 +49,23 @@ class CalibrationCreate(CalibrationReference):
 
 
 class CalibrationRead(BaseModel):
+    """How a project's scene units map to meters.
+
+    ``known_distance`` is the user picking two points and typing the real
+    length; ``aruco`` is the worker solving scale from a printed marker of
+    known size (WP 5.1). Only the manual method carries a two-point
+    ``reference``; the automatic one reports the marker and how tightly the
+    per-marker estimates agreed, which the UI turns into an uncertainty.
+    """
+
     scale: FiniteFloat
-    method: Literal["known_distance"]
-    reference: CalibrationReference
+    method: Literal["known_distance", "aruco"]
+    reference: CalibrationReference | None = None
     calibrated_at: UTCDatetime
+    residual: FiniteFloat | None = None
+    sample_count: int | None = Field(default=None, ge=0)
+    marker_length_m: FiniteFloat | None = None
+    marker_dictionary: str | None = None
 
 
 class ProjectRead(ORMModel):

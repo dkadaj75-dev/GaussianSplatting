@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -138,3 +139,47 @@ def artifact_file_response(directory: Path, filename: str, *, context: str) -> F
         filename=path.name,
         content_disposition_type="inline",
     )
+
+
+def read_manifest_calibration(directory: Path) -> dict[str, Any] | None:
+    """Return the worker's ``calibration`` block, or ``None``.
+
+    The worker writes this when it solved scale from an ArUco marker (WP 5.1);
+    it is absent, ``null``, or malformed whenever it could not. Anything other
+    than a usable positive finite scale reads as "no calibration" — an
+    automatic figure is never worth failing a request over.
+    """
+    path = directory / MANIFEST_FILENAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        logger.warning("Ignoring unreadable %s in %s", MANIFEST_FILENAME, directory)
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+    block = raw.get("calibration")
+    if not isinstance(block, dict):
+        return None
+
+    scale = block.get("scale")
+    if not isinstance(scale, int | float) or isinstance(scale, bool):
+        return None
+    scale = float(scale)
+    if not math.isfinite(scale) or scale <= 0:
+        return None
+
+    calibration: dict[str, Any] = {"scale": scale, "method": "aruco"}
+    for key in ("residual", "marker_length_m"):
+        value = block.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+            calibration[key] = float(value)
+    sample_count = block.get("sample_count")
+    if isinstance(sample_count, int) and not isinstance(sample_count, bool) and sample_count >= 0:
+        calibration["sample_count"] = sample_count
+    dictionary = block.get("marker_dictionary")
+    if isinstance(dictionary, str) and dictionary:
+        calibration["marker_dictionary"] = dictionary
+    return calibration

@@ -104,14 +104,18 @@ export function ProjectDetailPage() {
         }
         const src = api.artifactUrl(jobId, artifact.filename);
         setViewerSrc(src);
-        navigate(`/viewer?src=${encodeURIComponent(src)}`);
+        // `project` is what lets the viewer persist measurements and read the
+        // scene's calibration (WP 3.2).
+        navigate(
+          `/viewer?src=${encodeURIComponent(src)}&project=${encodeURIComponent(projectId)}`,
+        );
       } catch (error) {
         setOpenError(
           error instanceof Error ? error.message : 'Could not load the job’s artifacts.',
         );
       }
     },
-    [queryClient, setViewerSrc, navigate],
+    [queryClient, setViewerSrc, navigate, projectId],
   );
 
   const project = projectQuery.data;

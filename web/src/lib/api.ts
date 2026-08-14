@@ -1,5 +1,17 @@
 import { apiUrl } from './env';
-import type { Artifact, Job, JobStage, JobStatus, Project, ProjectStatus } from '../types';
+import type {
+  Artifact,
+  Calibration,
+  Job,
+  JobStage,
+  JobStatus,
+  Measurement,
+  MeasurementInput,
+  MeasurementKind,
+  Point3,
+  Project,
+  ProjectStatus,
+} from '../types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -58,12 +70,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // The API speaks snake_case (api/app/schemas.py). Translation happens here, at
 // the single boundary, so nothing downstream has to know that.
 
+export interface ApiCalibration {
+  scale: number;
+  method: 'known_distance';
+  reference: {
+    point_a: Point3;
+    point_b: Point3;
+    real_distance_m: number;
+  };
+  calibrated_at: string;
+}
+
 export interface ApiProject {
   id: string;
   name: string;
   created_at: string;
   status: ProjectStatus;
   photo_count?: number;
+  /** Absent on API builds that predate WP 3.3. */
+  calibration?: ApiCalibration | null;
+}
+
+export interface ApiMeasurement {
+  id: string;
+  project_id: string;
+  kind: MeasurementKind;
+  points: unknown[];
+  value: number | null;
+  unit: string;
+  label: string | null;
+  created_at: string;
 }
 
 export interface ApiJob {
@@ -80,13 +116,62 @@ export interface ApiJob {
   task_id?: string | null;
 }
 
+/**
+ * Defensive rather than a straight cast: `points` is a JSON column on the API
+ * side (`list[Any]`), so a row could legitimately hold anything.
+ */
+function toPoints(raw: unknown[]): Point3[] {
+  const points: Point3[] = [];
+  for (const entry of raw) {
+    if (
+      Array.isArray(entry) &&
+      entry.length >= 3 &&
+      entry.slice(0, 3).every((n) => typeof n === 'number' && Number.isFinite(n))
+    ) {
+      points.push([entry[0] as number, entry[1] as number, entry[2] as number]);
+    }
+  }
+  return points;
+}
+
+export function toCalibration(raw: ApiCalibration | null | undefined): Calibration | null {
+  if (!raw || typeof raw.scale !== 'number' || !Number.isFinite(raw.scale)) return null;
+  const reference = raw.reference;
+  return {
+    scale: raw.scale,
+    method: raw.method ?? 'known_distance',
+    reference: {
+      pointA: reference?.point_a ?? [0, 0, 0],
+      pointB: reference?.point_b ?? [0, 0, 0],
+      realDistanceM: reference?.real_distance_m ?? 0,
+    },
+    calibratedAt: raw.calibrated_at,
+  };
+}
+
 export function toProject(raw: ApiProject): Project {
+  const calibration = toCalibration(raw.calibration);
   return {
     id: raw.id,
     name: raw.name,
     createdAt: raw.created_at,
     status: raw.status,
     photoCount: raw.photo_count ?? 0,
+    calibration,
+    calibrated: calibration !== null,
+  };
+}
+
+export function toMeasurement(raw: ApiMeasurement): Measurement {
+  return {
+    id: raw.id,
+    projectId: raw.project_id,
+    kind: raw.kind,
+    points: toPoints(raw.points ?? []),
+    value: raw.value ?? null,
+    unit: raw.unit,
+    label: raw.label ?? null,
+    createdAt: raw.created_at,
   };
 }
 
@@ -135,6 +220,56 @@ export const api = {
 
   listArtifacts: (jobId: string) =>
     request<Artifact[]>(`/api/jobs/${encodeURIComponent(jobId)}/artifacts`),
+
+  // --- Measurements (WP 3.2) -------------------------------------------------
+
+  listMeasurements: (projectId: string) =>
+    request<ApiMeasurement[]>(
+      `/api/projects/${encodeURIComponent(projectId)}/measurements`,
+    ).then((rows) => rows.map(toMeasurement)),
+
+  createMeasurement: (projectId: string, input: MeasurementInput) =>
+    request<ApiMeasurement>(`/api/projects/${encodeURIComponent(projectId)}/measurements`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: input.kind,
+        points: input.points,
+        value: input.value,
+        unit: input.unit,
+        label: input.label,
+      }),
+    }).then(toMeasurement),
+
+  deleteMeasurement: (projectId: string, measurementId: string) =>
+    request<void>(
+      `/api/projects/${encodeURIComponent(projectId)}/measurements/${encodeURIComponent(measurementId)}`,
+      { method: 'DELETE' },
+    ),
+
+  // --- Calibration (WP 3.3) --------------------------------------------------
+  //
+  // Owned by the API package; a build that predates it answers 404/405 and the
+  // viewer degrades to "uncalibrated" rather than breaking.
+
+  setCalibration: (
+    projectId: string,
+    reference: { pointA: Point3; pointB: Point3; realDistanceM: number },
+  ) =>
+    request<ApiProject>(`/api/projects/${encodeURIComponent(projectId)}/calibration`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        point_a: reference.pointA,
+        point_b: reference.pointB,
+        real_distance_m: reference.realDistanceM,
+      }),
+    }).then(toProject),
+
+  clearCalibration: (projectId: string) =>
+    request<ApiProject>(`/api/projects/${encodeURIComponent(projectId)}/calibration`, {
+      method: 'DELETE',
+    }).then(toProject),
 
   /** Absolute URL the splat viewer streams an artifact from. */
   artifactUrl: (jobId: string, filename: string) =>
@@ -195,4 +330,5 @@ export const queryKeys = {
   jobs: (projectId: string) => ['projects', projectId, 'jobs'] as const,
   job: (jobId: string) => ['jobs', jobId] as const,
   artifacts: (jobId: string) => ['jobs', jobId, 'artifacts'] as const,
+  measurements: (projectId: string) => ['projects', projectId, 'measurements'] as const,
 };

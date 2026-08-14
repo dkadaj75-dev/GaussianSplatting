@@ -1,6 +1,10 @@
 import { Suspense, lazy, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useAppStore } from '../store/useAppStore';
+import { api, queryKeys } from '../lib/api';
+import { useMeasureSession } from '../hooks/useMeasureSession';
+import { MeasureTools } from '../components/MeasureTools';
 import { ViewerIcon } from '../components/icons';
 
 // three.js + the splat renderer are several hundred KB; keep them off the
@@ -32,9 +36,29 @@ export function ViewerPage() {
   const viewerSrc = linkedSrc ?? storedSrc;
   const [draft, setDraft] = useState(viewerSrc ?? '');
 
+  // `?project=` is optional. With it, measurements persist and the scene knows
+  // its scale; without it the viewer is still a viewer (WP 3.2).
+  const projectId = searchParams.get('project');
+
+  const projectQuery = useQuery({
+    queryKey: queryKeys.project(projectId ?? ''),
+    queryFn: () => api.getProject(projectId ?? ''),
+    enabled: Boolean(projectId),
+  });
+
+  // A project id that no longer resolves must not silently swallow
+  // measurements into a project that isn't there.
+  const resolvedProjectId = projectQuery.isError ? null : projectId;
+  const session = useMeasureSession({
+    projectId: resolvedProjectId,
+    project: projectQuery.data,
+  });
+
   const load = (value: string) => {
     setViewerSrc(value);
-    setSearchParams({ src: value }, { replace: true });
+    const next: Record<string, string> = { src: value };
+    if (projectId) next.project = projectId;
+    setSearchParams(next, { replace: true });
   };
 
   const close = () => {
@@ -96,7 +120,15 @@ export function ViewerPage() {
               </div>
             }
           >
-            <SplatViewer key={viewerSrc} src={viewerSrc} />
+            <SplatViewer
+              key={viewerSrc}
+              src={viewerSrc}
+              pickEnabled={session.pickEnabled}
+              onPick={session.handlePick}
+              overlayItems={session.overlayItems}
+            >
+              <MeasureTools session={session} />
+            </SplatViewer>
           </Suspense>
         ) : (
           <div className="grid size-full place-items-center overflow-y-auto p-6">
@@ -116,6 +148,10 @@ export function ViewerPage() {
               <p className="mt-4 text-xs text-muted">
                 One finger orbits · two fingers pinch to zoom and pan · drag with the right mouse
                 button to pan on desktop. The host must allow cross-origin requests.
+              </p>
+              <p className="mt-2 text-xs text-muted">
+                Open a scene from its project to measure with a saved scale — a scene loaded by URL
+                alone measures in relative units and keeps nothing.
               </p>
             </div>
           </div>

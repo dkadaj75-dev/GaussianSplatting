@@ -1,10 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import * as THREE from 'three';
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 import { AlertIcon } from './icons';
+import { MeasurementOverlay } from '../lib/measurementOverlay';
+import type { OverlayItem } from '../lib/measurementOverlay';
+import {
+  angularRadiusForScreenRadius,
+  centersFromSplatMesh,
+  pickNearestSplat,
+} from '../lib/picking';
+import type { Point3 } from '../types';
 
 /** Mobile GPUs choke above 2x; PLAN.md §3 mandates the clamp. */
 const MAX_DEVICE_PIXEL_RATIO = 2;
+
+/**
+ * How far a pointer may travel and still count as a tap rather than an orbit.
+ * 8 px is below the noise floor of a deliberate drag but above the wobble of a
+ * thumb pressing a phone screen.
+ */
+const TAP_SLOP_PX = 8;
+
+/** Catch radius for a pick, in CSS pixels — roughly a fingertip. */
+const TAP_RADIUS_PX = 22;
+
+/** Splat centres examined per pick; larger clouds are strided (WP 3.1). */
+const MAX_PICK_SAMPLES = 200_000;
 
 type Phase = 'idle' | 'downloading' | 'processing' | 'ready' | 'error';
 
@@ -23,6 +45,18 @@ export interface SplatViewerProps {
   cameraUp?: [number, number, number];
   onReady?: () => void;
   onError?: (message: string) => void;
+
+  /**
+   * Routes taps to {@link onPick} and shows the crosshair hint. Orbiting keeps
+   * working — only a tap that did not drag is treated as a pick.
+   */
+  pickEnabled?: boolean;
+  /** A tap resolved to this scene-space point, or `null` when it hit nothing. */
+  onPick?: (point: Point3 | null) => void;
+  /** Markers, segments and labels to draw in the scene. */
+  overlayItems?: readonly OverlayItem[];
+  /** Overlay UI (toolbar, panels, sheets) stacked above the canvas. */
+  children?: ReactNode;
 }
 
 /** Derives the loader format from the path, ignoring any query string or hash. */
@@ -49,14 +83,17 @@ function clampedPixelRatio(): number {
  * Samples splat centres to find a sane camera framing for an arbitrary scene.
  * Uses a percentile radius so a few stray gaussians can't push the camera into
  * the next postcode.
+ *
+ * Returns the radius it settled on: SfM scenes have no canonical scale, so
+ * picking thresholds and marker sizes are expressed relative to it.
  */
 function frameScene(
   mesh: GaussianSplats3D.SplatMesh,
   camera: THREE.PerspectiveCamera,
   controls: GaussianSplats3D.SplatOrbitControls,
-): void {
+): number | null {
   const splatCount = mesh.getSplatCount();
-  if (splatCount === 0) return;
+  if (splatCount === 0) return null;
 
   const sampleCount = Math.min(splatCount, 4096);
   const stride = Math.max(1, Math.floor(splatCount / sampleCount));
@@ -69,7 +106,7 @@ function frameScene(
     samples.push(scratch.clone());
     centre.add(scratch);
   }
-  if (samples.length === 0) return;
+  if (samples.length === 0) return null;
   centre.divideScalar(samples.length);
 
   const distances = samples.map((s) => s.distanceTo(centre)).sort((a, b) => a - b);
@@ -92,6 +129,7 @@ function frameScene(
   controls.minDistance = distance / 100;
   controls.maxDistance = distance * 10;
   controls.update();
+  return radius;
 }
 
 /**
@@ -101,23 +139,42 @@ function frameScene(
  * create them) so it can clamp the device pixel ratio, resize with the
  * container instead of the window, and recover from WebGL context loss.
  */
-export function SplatViewer({ src, className, cameraUp, onReady, onError }: SplatViewerProps) {
+export function SplatViewer({
+  src,
+  className,
+  cameraUp,
+  onReady,
+  onError,
+  pickEnabled = false,
+  onPick,
+  overlayItems,
+  children,
+}: SplatViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const labelHostRef = useRef<HTMLDivElement>(null);
+  const crosshairRef = useRef<HTMLDivElement>(null);
   const [phase, setPhase] = useState<Phase>('idle');
   const [percent, setPercent] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  /** Bumped when a fresh overlay exists, so the sync effect re-applies items. */
+  const [overlayEpoch, setOverlayEpoch] = useState(0);
 
   const resetViewRef = useRef<(() => void) | null>(null);
   const flipUpRef = useRef<(() => void) | null>(null);
+  const overlayRef = useRef<MeasurementOverlay | null>(null);
 
   // Keep the callbacks out of the effect's dependency list; they change identity
   // freely and re-creating the whole WebGL context for that would be absurd.
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
+  const onPickRef = useRef(onPick);
+  const pickEnabledRef = useRef(pickEnabled);
   useEffect(() => {
     onReadyRef.current = onReady;
     onErrorRef.current = onError;
+    onPickRef.current = onPick;
+    pickEnabledRef.current = pickEnabled;
   });
 
   const upKey = (cameraUp ?? [0, -1, 0]).join(',');
@@ -236,18 +293,146 @@ export function SplatViewer({ src, className, cameraUp, onReady, onError }: Spla
       controls.maxPolarAngle = Math.PI;
     }
 
-    resetViewRef.current = () => {
+    // Scene scale, learnt from the framing pass. Picking thresholds and marker
+    // sizes are relative to it because SfM output has no canonical unit.
+    let sceneRadius = 1;
+    const applyFraming = () => {
       const mesh = viewer?.splatMesh;
-      if (mesh && controls) frameScene(mesh, camera, controls);
+      if (!mesh || !controls) return;
+      sceneRadius = frameScene(mesh, camera, controls) ?? sceneRadius;
+    };
+
+    resetViewRef.current = () => {
+      applyFraming();
       viewer?.forceRenderNextFrame();
     };
     flipUpRef.current = () => {
       camera.up.negate();
       controls?.update();
-      const mesh = viewer?.splatMesh;
-      if (mesh && controls) frameScene(mesh, camera, controls);
+      applyFraming();
       viewer?.forceRenderNextFrame();
     };
+
+    // --- Measurement overlay (WP 3.1/3.2) ------------------------------------
+
+    const overlay = labelHostRef.current ? new MeasurementOverlay(labelHostRef.current) : null;
+    if (overlay && viewer?.threeScene) {
+      viewer.threeScene.add(overlay.group);
+      overlayRef.current = overlay;
+      setOverlayEpoch((epoch) => epoch + 1);
+
+      // The library renders `threeScene` and then the splats. Chaining the
+      // always-on-top pass onto `render` is the only seam that lands *after*
+      // the splats without forking the renderer's own loop.
+      const baseRender = viewer.render.bind(viewer);
+      viewer.render = () => {
+        baseRender();
+        if (renderer) overlay.renderGhost(renderer, camera);
+      };
+    }
+
+    // Markers must hold a constant pixel size and the label chips must track
+    // their anchors, both of which change every time the camera moves.
+    let frame = 0;
+    const tick = () => {
+      frame = requestAnimationFrame(tick);
+      overlay?.update(camera, container.clientWidth, container.clientHeight);
+    };
+    frame = requestAnimationFrame(tick);
+
+    // --- Picking (WP 3.1) ----------------------------------------------------
+
+    const rayOrigin = new THREE.Vector3();
+    const rayDirection = new THREE.Vector3();
+    const pickScratch = new THREE.Vector3();
+
+    const pickAt = (clientX: number, clientY: number): Point3 | null => {
+      const mesh = viewer?.splatMesh;
+      if (!mesh) return null;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+
+      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1);
+      camera.updateMatrixWorld();
+      rayOrigin.setFromMatrixPosition(camera.matrixWorld);
+      rayDirection.set(ndcX, ndcY, 0.5).unproject(camera).sub(rayOrigin).normalize();
+
+      const hit = pickNearestSplat(
+        rayOrigin,
+        rayDirection,
+        centersFromSplatMesh(mesh, pickScratch),
+        {
+          angularRadius: angularRadiusForScreenRadius(TAP_RADIUS_PX, camera.fov, rect.height),
+          // A floor keeps a tap landing right in front of the lens pickable;
+          // a ceiling stops a distant tap swallowing a quarter of the scene.
+          minRadius: sceneRadius * 0.002,
+          maxRadius: sceneRadius * 0.25,
+          nearDistance: camera.near,
+          farDistance: camera.far,
+          maxSamples: MAX_PICK_SAMPLES,
+        },
+      );
+      return hit?.point ?? null;
+    };
+
+    const moveCrosshair = (clientX: number, clientY: number) => {
+      const crosshair = crosshairRef.current;
+      if (!crosshair) return;
+      const rect = container.getBoundingClientRect();
+      crosshair.style.opacity = '1';
+      crosshair.style.transform = `translate(-50%,-50%) translate(${clientX - rect.left}px,${clientY - rect.top}px)`;
+    };
+
+    const hideCrosshair = () => {
+      if (crosshairRef.current) crosshairRef.current.style.opacity = '0';
+    };
+
+    // A tap is a pointer that went down and came up in the same place, alone.
+    // Anything else is an orbit, a pinch or a pan and must not place a point.
+    const activePointers = new Set<number>();
+    let candidate: { id: number; x: number; y: number } | null = null;
+
+    const onPointerDown = (event: PointerEvent) => {
+      activePointers.add(event.pointerId);
+      // A second finger means a pinch or a two-finger pan; the gesture that was
+      // shaping up as a tap is retroactively cancelled.
+      candidate =
+        activePointers.size === 1
+          ? { id: event.pointerId, x: event.clientX, y: event.clientY }
+          : null;
+      if (pickEnabledRef.current) moveCrosshair(event.clientX, event.clientY);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (pickEnabledRef.current) moveCrosshair(event.clientX, event.clientY);
+      if (!candidate || candidate.id !== event.pointerId) return;
+      if (Math.hypot(event.clientX - candidate.x, event.clientY - candidate.y) > TAP_SLOP_PX) {
+        candidate = null;
+      }
+    };
+
+    const onPointerUp = (event: PointerEvent) => {
+      const tapped = candidate?.id === event.pointerId && activePointers.size === 1;
+      activePointers.delete(event.pointerId);
+      candidate = null;
+      // A finger leaves no cursor behind, so the hint has to go with it.
+      if (event.pointerType !== 'mouse') hideCrosshair();
+      if (!tapped || !pickEnabledRef.current) return;
+      onPickRef.current?.(pickAt(event.clientX, event.clientY));
+    };
+
+    const onPointerCancel = (event: PointerEvent) => {
+      activePointers.delete(event.pointerId);
+      candidate = null;
+      hideCrosshair();
+    };
+
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerCancel);
+    canvas.addEventListener('pointerleave', hideCrosshair);
 
     try {
       viewer
@@ -265,8 +450,7 @@ export function SplatViewer({ src, className, cameraUp, onReady, onError }: Spla
         })
         .then(() => {
           if (cancelled || !viewer) return;
-          const mesh = viewer.splatMesh;
-          if (mesh && controls) frameScene(mesh, camera, controls);
+          applyFraming();
           viewer.start();
           setPhase('ready');
           setPercent(100);
@@ -287,7 +471,15 @@ export function SplatViewer({ src, className, cameraUp, onReady, onError }: Spla
       cancelled = true;
       resetViewRef.current = null;
       flipUpRef.current = null;
+      cancelAnimationFrame(frame);
       canvas.removeEventListener('webglcontextlost', onContextLost);
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerCancel);
+      canvas.removeEventListener('pointerleave', hideCrosshair);
+      if (overlayRef.current === overlay) overlayRef.current = null;
+      overlay?.dispose();
       resizeObserver?.disconnect();
       resizeObserver = null;
       const disposingViewer = viewer;
@@ -303,13 +495,59 @@ export function SplatViewer({ src, className, cameraUp, onReady, onError }: Spla
     };
   }, [src, upKey, reloadToken]);
 
+  // `overlayEpoch` re-runs this once the WebGL effect has built the overlay,
+  // so items handed down before the scene existed still land.
+  useEffect(() => {
+    overlayRef.current?.setItems(overlayItems ?? []);
+  }, [overlayItems, overlayEpoch]);
+
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
 
   const loading = phase === 'downloading' || phase === 'processing';
 
   return (
     <div className={`relative size-full overflow-hidden bg-black ${className ?? ''}`}>
-      <div ref={containerRef} className="touch-canvas absolute inset-0" data-testid="splat-canvas" />
+      <div
+        ref={containerRef}
+        className={`touch-canvas absolute inset-0 ${pickEnabled ? 'cursor-crosshair' : ''}`}
+        data-testid="splat-canvas"
+      />
+
+      {/* Label chips live outside the canvas so they stay real, crisp text. */}
+      <div
+        ref={labelHostRef}
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+        data-testid="measurement-labels"
+      />
+
+      {/* Follows the pointer in measure mode: shows *where* a tap would land. */}
+      <div
+        ref={crosshairRef}
+        aria-hidden="true"
+        className={`pointer-events-none absolute top-0 left-0 opacity-0 transition-opacity duration-150 ${
+          pickEnabled ? '' : 'hidden'
+        }`}
+      >
+        <svg width="34" height="34" viewBox="0 0 34 34" fill="none" aria-hidden="true">
+          <circle cx="17" cy="17" r="10.5" stroke="rgba(0,0,0,0.55)" strokeWidth="3" />
+          <circle cx="17" cy="17" r="10.5" stroke="rgba(255,255,255,0.85)" strokeWidth="1.25" />
+          <path
+            d="M17 3v7M17 24v7M3 17h7M24 17h7"
+            stroke="rgba(0,0,0,0.55)"
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
+          <path
+            d="M17 3v7M17 24v7M3 17h7M24 17h7"
+            stroke="rgba(255,255,255,0.85)"
+            strokeWidth="1.25"
+            strokeLinecap="round"
+          />
+        </svg>
+      </div>
+
+      {/* Tools only make sense over a scene that is actually on screen. */}
+      {phase === 'ready' ? children : null}
 
       {loading ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 p-4">
