@@ -92,8 +92,8 @@ docs/     PLAN.md, ROADMAP.md, ADRs
 
 Milestones 0–3 are complete and on the branch, plus 5.1 and 6.1 out of order
 (the automatic-calibration and sharing work was independent of Milestone 4, so
-it ran in parallel). Every package's gates are green: **151 api tests**,
-**15 worker tests**, **131 web tests**, ruff and eslint clean, production build
+it ran in parallel). Every package's gates are green: **161 api tests**,
+**23 worker tests**, **427 web tests**, ruff and eslint clean, production build
 and all three compose profiles valid.
 
 | WP | State | Notes |
@@ -107,10 +107,11 @@ and all three compose profiles valid.
 | 2.5 | done | CPU and CUDA worker images (COLMAP + OpenSplat) behind compose profiles |
 | 3.1–3.3 | done | Splat point picking, distances, known-distance calibration, badge |
 | 3.4 | open | Accuracy validation against a physical ground-truth object |
-| 4.1–4.3 | in progress | Capture guidance, offline upload queue, failure diagnostics |
+| 4.1–4.3 | done | Capture guidance, offline upload queue, failure diagnostics |
 | 5.1 | done | ArUco auto-scale in the worker, applied to the project on job completion |
-| 5.2–5.3 | open | Angle/polyline/height tools, uncertainty display, report export |
+| 5.2–5.3 | done | Path/height/angle tools, uncertainty display, PNG + PDF report export |
 | 6.1 | done (API) | Share tokens and a read-only public surface; owner UI still open |
+| — | done | Compose profile fix so a fake worker cannot race a real one; laptop-GPU tuning (`downscale`) |
 | 6.2–6.3 | open | Source-photo frustum overlay, LOD tuning |
 
 ### Verified vs. unverified
