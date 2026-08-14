@@ -1,0 +1,64 @@
+@import 'tailwindcss';
+
+/* Dark-first neutral palette, exposed as Tailwind utilities:
+   bg-surface / bg-raised / bg-sunken, text-content / text-muted,
+   border-line, bg-accent / text-on-accent. */
+@theme {
+  --color-surface: oklch(0.17 0 0);
+  --color-raised: oklch(0.22 0 0);
+  --color-sunken: oklch(0.12 0 0);
+  --color-line: oklch(0.31 0 0);
+  --color-content: oklch(0.96 0 0);
+  --color-muted: oklch(0.72 0 0);
+  --color-accent: oklch(0.73 0.14 230);
+  --color-on-accent: oklch(0.16 0 0);
+
+  /* Minimum touch target — PLAN.md §3 requires >= 44px. Gives h-touch / min-h-touch. */
+  --spacing-touch: 2.75rem;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-surface);
+    color: var(--color-content);
+    font-family:
+      ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    /* Never bounce the page: the viewer needs the full viewport. */
+    overscroll-behavior: none;
+  }
+
+  /* Keyboard focus stays visible everywhere. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+@utility safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@utility safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* The splat canvas owns all touch gestures; the browser must not scroll or zoom. */
+@utility touch-canvas {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
