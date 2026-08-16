@@ -19,14 +19,14 @@ architectures substantially affect both.
 Use a recent Docker Engine/Compose v2 host with about 8 GB of build memory:
 
 ```sh
-docker compose --profile cpu build worker-cpu
-docker compose stop worker
-docker compose --profile cpu up worker-cpu
+docker compose --profile cpu up --build
 ```
 
-Profiles are additive: the unprofiled fake `worker` is still part of the stack.
-Stop it before processing real jobs so fake and real consumers do not share the
-same Celery queue.
+The fake `worker` sits behind the `fake` profile, which the repository's `.env`
+selects by default. Passing `--profile cpu` (or `gpu`) on the command line
+replaces that default, so exactly one worker runs. This matters: every worker
+consumes the same Celery queue, and a fake worker racing a real one would
+publish placeholder artifacts for a real job.
 
 ## NVIDIA GPU
 
@@ -37,7 +37,7 @@ in addition to Docker Engine and Compose v2:
 ```sh
 docker compose --profile gpu build worker-gpu
 docker compose stop worker
-docker compose --profile gpu up worker-gpu
+docker compose --profile gpu up --build
 ```
 
 OpenSplat is CUDA-enabled. Ubuntu 22.04's distribution COLMAP is nevertheless
