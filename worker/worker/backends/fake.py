@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from ..fixtures import placeholder_records, write_3dgs_ply, write_splat
 from .base import JobContext, PipelineBackend, ProgressCallback
 
 
@@ -35,13 +36,18 @@ class FakeBackend(PipelineBackend):
 
     def train(self, job: JobContext, progress: ProgressCallback) -> None:
         self._simulate("train", progress)
-        self._write(job.work_dir / "train" / "output.ply", "ply\nformat ascii 1.0\nend_header\n")
+        write_3dgs_ply(job.work_dir / "train" / "output.ply", placeholder_records())
 
     def compress(self, job: JobContext, progress: ProgressCallback) -> None:
         self._simulate("compress", progress)
-        self._write(job.work_dir / "compress" / "scene.splat")
+        write_splat(job.work_dir / "compress" / "scene.splat", placeholder_records())
 
     def publish(self, job: JobContext, progress: ProgressCallback) -> None:
+        # The placeholder must be a *valid* scene: the point of the fake
+        # pipeline is exercising the whole stack, and that includes the viewer
+        # actually displaying what was published. An empty file fails there
+        # with a misleading loader error.
         self._simulate("publish", progress)
-        self._write(job.output_dir / "output.ply", "ply\nformat ascii 1.0\nend_header\n")
-        self._write(job.output_dir / "scene.splat")
+        records = placeholder_records()
+        write_3dgs_ply(job.output_dir / "output.ply", records)
+        write_splat(job.output_dir / "scene.splat", records)
