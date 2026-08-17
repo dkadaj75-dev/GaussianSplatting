@@ -58,6 +58,7 @@ async def create_job(payload: JobCreate, project: ProjectDep, session: SessionDe
         status=JobStatus.queued,
         progress=0.0,
         message=payload.message,
+        params=payload.params or None,
     )
     session.add(job)
 

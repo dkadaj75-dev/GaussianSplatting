@@ -116,7 +116,8 @@ class CeleryDispatcher:
         return self._app
 
     def dispatch(self, job: Job) -> str | None:
-        params: dict[str, Any] = {"stage": JobStage(job.stage).value}
+        # User tuning first, then the reserved key so it can never be spoofed.
+        params: dict[str, Any] = {**(job.params or {}), "stage": JobStage(job.stage).value}
         options: dict[str, Any] = {"retry": True, "retry_policy": BROKER_RETRY_POLICY}
         if self.queue:
             options["queue"] = self.queue

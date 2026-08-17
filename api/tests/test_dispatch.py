@@ -170,3 +170,30 @@ async def test_create_job_endpoint_does_not_dispatch_when_queue_mode_none(
     assert response.status_code == 201
     assert response.json()["task_id"] is None
     assert fake_celery.calls == []
+
+
+async def test_dispatch_forwards_job_params(client, project_with_photo, monkeypatch):
+    """Tuning like downscale/matcher must reach the worker's task args."""
+    from app import job_service
+
+    sent: dict = {}
+
+    class FakeDispatcher:
+        def dispatch(self, job):
+            sent["params"] = dict(job.params or {})
+            sent["job_id"] = job.id
+            return "task-123"
+
+    monkeypatch.setattr(job_service, "get_dispatcher", lambda *a, **k: FakeDispatcher())
+
+    payload = {"params": {"downscale": 2, "matcher": "sequential", "iterations": 7000}}
+    response = await client.post(f"/api/projects/{project_with_photo['id']}/jobs", json=payload)
+    assert response.status_code == 201, response.text
+    assert response.json()["params"] == payload["params"]
+    assert sent["params"] == payload["params"]
+
+
+async def test_job_params_are_bounded(client, project_with_photo):
+    huge = {f"key{i}": "x" for i in range(40)}
+    response = await client.post(f"/api/projects/{project_with_photo['id']}/jobs", json={"params": huge})
+    assert response.status_code == 422

@@ -126,6 +126,10 @@ class Job(SQLModel, table=True):
     finished_at: datetime | None = Field(default=None)
     # Celery task id — populated once the queue integration lands (WP 0.4).
     task_id: str | None = Field(default=None, max_length=128, index=True)
+    # Pipeline tuning forwarded verbatim to the worker (downscale, iterations,
+    # matcher, marker_length_m, …). The API stays agnostic about keys so worker
+    # capabilities can evolve without an API release; validation is size-only.
+    params: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
 
 SHARE_TOKEN_BYTES = 32

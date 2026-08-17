@@ -6,10 +6,11 @@ Kept separate from the SQLModel tables so the storage layout can evolve
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, FiniteFloat
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, FiniteFloat, field_validator
 
 from app.models import JobStage, JobStatus, MeasurementKind, ProjectStatus, as_utc
 
@@ -99,6 +100,19 @@ class JobCreate(BaseModel):
 
     stage: JobStage = JobStage.ingest
     message: str | None = Field(default=None, max_length=2000)
+    # Worker tuning (downscale, iterations, matcher, marker_length_m, …).
+    # Deliberately schemaless: the worker owns the vocabulary, the API only
+    # bounds the size so the queue message stays small.
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("params")
+    @classmethod
+    def _bounded_params(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(value) > 32:
+            raise ValueError("params may contain at most 32 keys")
+        if len(json.dumps(value)) > 4096:
+            raise ValueError("params must serialize to at most 4 kB")
+        return value
 
 
 class RegistrationRead(BaseModel):
@@ -120,6 +134,13 @@ class JobRead(ORMModel):
     started_at: UTCDatetime | None
     finished_at: UTCDatetime | None
     task_id: str | None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def _null_params_as_empty(cls, value: Any) -> Any:
+        # The column is nullable (params are optional); the contract is a dict.
+        return {} if value is None else value
     # Read from the job's manifest per request rather than stored: the output
     # directory is already the authority on what a finished job produced, and
     # the live progress message that carried this is long gone by then.
