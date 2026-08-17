@@ -19,6 +19,16 @@ python -m venv .venv && .venv/bin/pip install -r tools/reconstruct/requirements.
 # 1. Reconstruct. Prints how many photos registered — the key quality signal.
 .venv/bin/python tools/reconstruct/run_sfm.py /path/to/photos work/
 
+# Memory-constrained by default (WSL, laptops sharing RAM with Docker):
+# images are downscaled to 1600 px and extraction uses 2 threads. If the
+# process still prints "Killed" (the kernel's out-of-memory killer), stop
+# the Docker stack first (docker compose down) and/or lower further:
+.venv/bin/python tools/reconstruct/run_sfm.py /path/to/photos work/ --max-image-size 1200
+# On a roomy machine, raise quality/speed instead:
+.venv/bin/python tools/reconstruct/run_sfm.py /path/to/photos work/ --max-image-size 3200 --threads 8
+# Photos taken walking around the subject in order match much faster with:
+.venv/bin/python tools/reconstruct/run_sfm.py /path/to/photos work/ --sequential
+
 # 2. Convert the sparse model to the viewer's .splat layout.
 .venv/bin/python tools/reconstruct/points_to_splat.py work/sparse_model scene.splat
 
