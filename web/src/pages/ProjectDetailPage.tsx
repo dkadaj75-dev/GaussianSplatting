@@ -10,6 +10,9 @@ import { useJobProgress } from '../hooks/useJobProgress';
 import { useAppStore } from '../store/useAppStore';
 import { JobProgress, JobStatusBadge } from '../components/JobProgress';
 import { JobFailureCard, RegistrationWarning } from '../components/JobDiagnostics';
+import { ProcessingOptionsPanel } from '../components/ProcessingOptionsPanel';
+import { loadProcessingOptions, summariseJobParams, toJobParams } from '../lib/processingOptions';
+import type { JobParams } from '../lib/processingOptions';
 import { ProjectStatusBadge } from './ProjectsPage';
 import { AlertIcon, CaptureIcon, ViewerIcon } from '../components/icons';
 import type { Job } from '../types';
@@ -96,12 +99,18 @@ export function ProjectDetailPage() {
   const scene = selectSceneArtifact(artifactsQuery.data);
 
   const startJob = useMutation({
-    mutationFn: () => api.createJob(projectId),
+    mutationFn: (params: JobParams) => api.createJob(projectId, params),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.jobs(projectId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
   });
+
+  // The panel persists every edit, so the options are read back here at the
+  // moment the run actually starts — one source of truth, no stale copy.
+  const start = useCallback(() => {
+    startJob.mutate(toJobParams(loadProcessingOptions(projectId)));
+  }, [startJob, projectId]);
 
   const goToCapture = useCallback(() => {
     selectProject(projectId);
@@ -226,12 +235,18 @@ export function ProjectDetailPage() {
           <button
             type="button"
             disabled={!canStart}
-            onClick={() => startJob.mutate()}
+            onClick={start}
             className="min-h-touch flex-1 rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition-opacity enabled:hover:opacity-90 disabled:opacity-40"
           >
             {startJob.isPending ? 'Starting…' : 'Start processing'}
           </button>
         </div>
+
+        <ProcessingOptionsPanel
+          key={projectId}
+          projectId={projectId}
+          disabled={startJob.isPending}
+        />
 
         {photoCount === 0 ? (
           <p className="mt-2 text-xs text-muted">
@@ -260,7 +275,7 @@ export function ProjectDetailPage() {
             <JobFailureCard
               failure={diagnostics.failure}
               onAddPhotos={goToCapture}
-              onRetry={photoCount > 0 && !activeJob ? () => startJob.mutate() : undefined}
+              onRetry={photoCount > 0 && !activeJob ? start : undefined}
               retrying={startJob.isPending}
             />
           </div>
@@ -319,6 +334,9 @@ export function ProjectDetailPage() {
           <ul className="flex flex-col gap-2">
             {jobs.map((job) => {
               const row = watched && watched.id === job.id ? watched : job;
+              // The socket frame carries no params, so the REST row is the
+              // authority on how the run was configured.
+              const paramsSummary = summariseJobParams(job.params ?? row.params);
               return (
                 <li
                   key={job.id}
@@ -333,6 +351,14 @@ export function ProjectDetailPage() {
                       {Math.round(row.progress * 100)}% · {formatWhen(row.updatedAt)}
                       {row.message ? ` · ${row.message}` : ''}
                     </p>
+                    {paramsSummary ? (
+                      <p
+                        className="mt-0.5 truncate text-[11px] text-muted"
+                        data-testid="job-params-summary"
+                      >
+                        {paramsSummary}
+                      </p>
+                    ) : null}
                   </div>
                   {row.status === 'done' ? (
                     <button

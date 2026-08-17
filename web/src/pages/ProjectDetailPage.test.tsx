@@ -3,6 +3,13 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderApp } from '../test/renderApp';
 import { useAppStore } from '../store/useAppStore';
 import { resetUploadQueue } from '../hooks/useUploadQueue';
+import { api } from '../lib/api';
+import {
+  DEFAULT_PROCESSING_OPTIONS,
+  loadProcessingOptions,
+  optionsStorageKey,
+} from '../lib/processingOptions';
+import type { Job } from '../types';
 
 /** Inert socket: this suite is about the REST-driven parts of the page. */
 class SilentWebSocket {
@@ -99,6 +106,7 @@ let originalWebSocket: typeof WebSocket | undefined;
 
 beforeEach(() => {
   useAppStore.getState().reset();
+  localStorage.clear();
   DrivenWebSocket.instances = [];
   originalWebSocket = globalThis.WebSocket;
   globalThis.WebSocket = SilentWebSocket as unknown as typeof WebSocket;
@@ -173,6 +181,142 @@ describe('project detail page', () => {
 
     expect(await screen.findByText(/project not found/i)).toBeInTheDocument();
     expect(screen.getByText(/Project p1 not found/)).toBeInTheDocument();
+  });
+});
+
+// --- Processing options ------------------------------------------------------
+
+const CREATED_JOB: Job = {
+  id: 'j2',
+  projectId: 'p1',
+  stage: 'ingest',
+  progress: 0,
+  status: 'queued',
+  message: null,
+  createdAt: '2026-08-14T11:00:00Z',
+  updatedAt: '2026-08-14T11:00:00Z',
+};
+
+/** A project with photos and no run yet — the state the button is live in. */
+function idleProject() {
+  mockApi([
+    { match: (url) => url.endsWith('/api/projects/p1'), body: { ...PROJECT, status: 'draft' } },
+    { match: (url) => url.endsWith('/api/projects/p1/jobs'), body: [] },
+    { match: (url) => url.endsWith('/api/projects'), body: [] },
+  ]);
+}
+
+describe('processing options', () => {
+  it('stays collapsed until asked for, then sends the selections with the job', async () => {
+    idleProject();
+    const createJob = vi.spyOn(api, 'createJob').mockResolvedValue(CREATED_JOB);
+
+    renderApp('/projects/p1');
+
+    const disclosure = await screen.findByRole('button', { name: /processing options/i });
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText(/^quality$/i)).not.toBeInTheDocument();
+
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+
+    // Half resolution is preselected — most people are on a consumer GPU.
+    expect(screen.getByLabelText(/image resolution/i)).toHaveValue('2');
+
+    fireEvent.change(screen.getByLabelText(/^quality$/i), { target: { value: 'high' } });
+    fireEvent.change(screen.getByLabelText(/image resolution/i), { target: { value: '1' } });
+    fireEvent.click(screen.getByLabelText(/photos taken in order/i));
+    fireEvent.click(screen.getByLabelText(/printed marker/i));
+    fireEvent.change(screen.getByLabelText(/marker size/i), { target: { value: '150' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /start processing/i }));
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith('p1', {
+        downscale: 1,
+        iterations: 30000,
+        matcher: 'sequential',
+        marker_length_m: 0.15,
+      }),
+    );
+  });
+
+  it('reveals a free iteration count for the custom preset', async () => {
+    idleProject();
+    const createJob = vi.spyOn(api, 'createJob').mockResolvedValue(CREATED_JOB);
+
+    renderApp('/projects/p1');
+
+    fireEvent.click(await screen.findByRole('button', { name: /processing options/i }));
+    expect(screen.queryByLabelText(/iterations/i)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/^quality$/i), { target: { value: 'custom' } });
+    fireEvent.change(screen.getByLabelText(/iterations/i), { target: { value: '12000' } });
+    fireEvent.click(screen.getByRole('button', { name: /start processing/i }));
+
+    await waitFor(() =>
+      expect(createJob).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ iterations: 12000 }),
+      ),
+    );
+  });
+
+  it('remembers the last-used options per project', async () => {
+    idleProject();
+
+    const { unmount } = renderApp('/projects/p1');
+
+    fireEvent.click(await screen.findByRole('button', { name: /processing options/i }));
+    fireEvent.change(screen.getByLabelText(/image resolution/i), { target: { value: '4' } });
+    fireEvent.click(screen.getByLabelText(/photos taken in order/i));
+
+    await waitFor(() =>
+      expect(localStorage.getItem(optionsStorageKey('p1'))).not.toBeNull(),
+    );
+    expect(loadProcessingOptions('p1')).toMatchObject({ downscale: 4, sequential: true });
+    // Another project keeps its own defaults.
+    expect(loadProcessingOptions('p2')).toEqual(DEFAULT_PROCESSING_OPTIONS);
+
+    unmount();
+    renderApp('/projects/p1');
+
+    fireEvent.click(await screen.findByRole('button', { name: /processing options/i }));
+    expect(screen.getByLabelText(/image resolution/i)).toHaveValue('4');
+    expect(screen.getByLabelText(/photos taken in order/i)).toBeChecked();
+  });
+
+  it('shows how a run was configured on its job card', async () => {
+    mockApi([
+      { match: (url) => url.endsWith('/api/projects/p1'), body: PROJECT },
+      {
+        match: (url) => url.endsWith('/api/projects/p1/jobs'),
+        body: [
+          {
+            ...RUNNING_JOB,
+            params: { downscale: 2, iterations: 7000, matcher: 'sequential' },
+          },
+        ],
+      },
+    ]);
+
+    renderApp('/projects/p1');
+
+    expect(await screen.findByTestId('job-params-summary')).toHaveTextContent(
+      'Half res · 7000 iterations · sequential',
+    );
+  });
+
+  it('says nothing about options on a job that predates them', async () => {
+    mockApi([
+      { match: (url) => url.endsWith('/api/projects/p1'), body: PROJECT },
+      { match: (url) => url.endsWith('/api/projects/p1/jobs'), body: [RUNNING_JOB] },
+    ]);
+
+    renderApp('/projects/p1');
+
+    await screen.findByRole('region', { name: /job progress/i });
+    expect(screen.queryByTestId('job-params-summary')).not.toBeInTheDocument();
   });
 });
 

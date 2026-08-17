@@ -121,6 +121,8 @@ export interface ApiJob {
   started_at: string | null;
   finished_at: string | null;
   task_id?: string | null;
+  /** Processing options the run was started with; absent on older API builds. */
+  params?: Record<string, unknown> | null;
 }
 
 /**
@@ -192,6 +194,12 @@ export function toMeasurement(raw: ApiMeasurement): Measurement {
 }
 
 export function toJob(raw: ApiJob): Job {
+  // `params` is a JSON column: an API build that predates processing options
+  // omits it, and a row could hold anything — so only an object survives.
+  const params =
+    raw.params && typeof raw.params === 'object' && !Array.isArray(raw.params)
+      ? raw.params
+      : undefined;
   return {
     id: raw.id,
     projectId: raw.project_id,
@@ -203,6 +211,7 @@ export function toJob(raw: ApiJob): Job {
     updatedAt: raw.updated_at,
     startedAt: raw.started_at,
     finishedAt: raw.finished_at,
+    params,
   };
 }
 
@@ -226,12 +235,18 @@ export const api = {
 
   getJob: (jobId: string) => request<ApiJob>(`/api/jobs/${encodeURIComponent(jobId)}`).then(toJob),
 
-  /** Starts a pipeline run. The API rejects a project with no photos (400). */
-  createJob: (projectId: string) =>
+  /**
+   * Starts a pipeline run. The API rejects a project with no photos (400).
+   *
+   * `params` carries the worker knobs (`lib/processingOptions.ts`); omitting it
+   * runs the worker's own defaults, which is what an API build that predates
+   * processing options does with the field anyway.
+   */
+  createJob: (projectId: string, params?: Record<string, unknown>) =>
     request<ApiJob>(`/api/projects/${encodeURIComponent(projectId)}/jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(params && Object.keys(params).length > 0 ? { params } : {}),
     }).then(toJob),
 
   listArtifacts: (jobId: string) =>

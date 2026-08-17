@@ -127,6 +127,13 @@ export interface Job {
   updatedAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;
+  /**
+   * Worker knobs this run was started with (`downscale`, `iterations`,
+   * `matcher`, `marker_length_m`). Free-form JSON on the API side, and absent
+   * on jobs created before processing options existed — see
+   * `lib/processingOptions.ts`.
+   */
+  params?: Record<string, unknown>;
 }
 
 /** One file published by a finished job (`GET /api/jobs/{id}/artifacts`). */

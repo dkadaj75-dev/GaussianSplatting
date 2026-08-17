@@ -107,6 +107,9 @@ export function applyJobEvent(current: Job | null, input: unknown): Job | null {
     finishedAt: isTerminal(event.status)
       ? (current?.finishedAt ?? event.updated_at)
       : null,
+    // Progress frames never restate how the run was configured; carrying the
+    // params forward keeps the options summary on screen mid-run.
+    params: current?.params,
   };
 
   if (

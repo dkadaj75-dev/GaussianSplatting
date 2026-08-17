@@ -158,6 +158,15 @@ export function UndoIcon(props: IconProps) {
   );
 }
 
+/** Points right when collapsed; rotate it 90° to point down. */
+export function ChevronIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9.5 5.5 16 12l-6.5 6.5" />
+    </Icon>
+  );
+}
+
 export function TrashIcon(props: IconProps) {
   return (
     <Icon {...props}>
